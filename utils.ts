@@ -1873,6 +1873,99 @@ export const insertIntoContent = (
 // AMAZON PRODUCT SEARCH
 // ============================================================================
 
+export const fetchProductByASIN = async (
+  asin: string,
+  apiKey: string
+): Promise<ProductDetails | null> => {
+  if (!asin || asin.length !== 10) {
+    console.warn('[fetchProductByASIN] Invalid ASIN:', asin);
+    return null;
+  }
+
+  if (!apiKey) {
+    return {
+      id: `manual-${asin}-${Date.now()}`,
+      asin,
+      title: `Amazon Product (${asin})`,
+      brand: '',
+      category: '',
+      price: 'Check Price',
+      imageUrl: `https://ws-na.amazon-adsystem.com/widgets/q?_encoding=UTF8&ASIN=${asin}&Format=_SL250_&ID=AsinImage&ServiceVersion=20070822&WS=1`,
+      rating: 4.5,
+      reviewCount: 100,
+      prime: true,
+      faqs: [],
+      entities: [],
+      evidenceClaims: [],
+      insertionIndex: -1,
+      deploymentMode: 'ELITE_BENTO',
+    };
+  }
+
+  try {
+    const productApiUrl = `https://serpapi.com/search.json?engine=amazon_product&asin=${asin}&api_key=${apiKey}`;
+    const detailResponse = await fetchWithProxy(productApiUrl);
+    const detailData = JSON.parse(detailResponse);
+    const product = detailData.product_results || {};
+
+    let finalImage = '';
+    if (product.images?.length > 0) {
+      finalImage = typeof product.images[0] === 'string' 
+        ? product.images[0] 
+        : product.images[0].link;
+    } else if (product.images_flat?.length > 0) {
+      finalImage = product.images_flat[0];
+    } else if (product.main_image?.link) {
+      finalImage = product.main_image.link;
+    }
+
+    if (finalImage) {
+      finalImage = finalImage.replace(/\._AC_.*_\./, '._AC_SL1500_.');
+    }
+
+    if (!finalImage) {
+      finalImage = `https://ws-na.amazon-adsystem.com/widgets/q?_encoding=UTF8&ASIN=${asin}&Format=_SL250_&ID=AsinImage&ServiceVersion=20070822&WS=1`;
+    }
+
+    return {
+      id: `manual-${asin}-${Date.now()}`,
+      asin: product.asin || asin,
+      title: product.title || `Amazon Product (${asin})`,
+      brand: product.brand || '',
+      category: product.category || '',
+      price: product.price || 'Check Price',
+      imageUrl: finalImage,
+      rating: product.rating || 4.5,
+      reviewCount: product.reviews_count || 100,
+      prime: product.prime || true,
+      faqs: [],
+      entities: [],
+      evidenceClaims: [],
+      insertionIndex: -1,
+      deploymentMode: 'ELITE_BENTO',
+    };
+  } catch (error) {
+    console.warn(`[fetchProductByASIN] Lookup failed for "${asin}":`, error);
+    return {
+      id: `manual-${asin}-${Date.now()}`,
+      asin,
+      title: `Amazon Product (${asin})`,
+      brand: '',
+      category: '',
+      price: 'Check Price',
+      imageUrl: `https://ws-na.amazon-adsystem.com/widgets/q?_encoding=UTF8&ASIN=${asin}&Format=_SL250_&ID=AsinImage&ServiceVersion=20070822&WS=1`,
+      rating: 4.5,
+      reviewCount: 100,
+      prime: true,
+      faqs: [],
+      entities: [],
+      evidenceClaims: [],
+      insertionIndex: -1,
+      deploymentMode: 'ELITE_BENTO',
+    };
+  }
+};
+
 export const searchAmazonProduct = async (
   query: string, 
   apiKey: string

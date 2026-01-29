@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, Dispatch, SetStateAction } from 'react';
 import { BlogPost, ProductDetails, AppConfig, DeploymentMode, ComparisonData } from '../types';
-import { pushToWordPress, fetchRawPostContent, analyzeContentAndFindProduct, splitContentIntoBlocks, IntelligenceCache, generateProductBoxHtml, generateComparisonTableHtml } from '../utils';
+import { pushToWordPress, fetchRawPostContent, analyzeContentAndFindProduct, splitContentIntoBlocks, IntelligenceCache, generateProductBoxHtml, generateComparisonTableHtml, fetchProductByASIN } from '../utils';
 import { ProductBoxPreview } from './ProductBoxPreview';
 import { ComparisonTablePreview } from './ComparisonTablePreview';
 import Toastify from 'toastify-js';
@@ -30,6 +30,8 @@ export const PostEditor: React.FC<PostEditorProps> = ({ post, config, onBack }) 
     const [status, setStatus] = useState<'idle' | 'fetching' | 'analyzing' | 'pushing' | 'error'>('idle');
     const [viewTab, setViewTab] = useState<'visual' | 'code'>('visual');
     const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+    const [manualAsin, setManualAsin] = useState<string>('');
+    const [addingProduct, setAddingProduct] = useState<boolean>(false);
 
     // Initialization Logic
     useEffect(() => {
@@ -281,6 +283,53 @@ export const PostEditor: React.FC<PostEditorProps> = ({ post, config, onBack }) 
         return Object.values(productMap).filter(p => !placedIds.has(p.id));
     };
 
+    const extractASIN = (input: string): string | null => {
+        const trimmed = input.trim();
+        if (/^[A-Z0-9]{10}$/i.test(trimmed)) {
+            return trimmed.toUpperCase();
+        }
+        const urlMatch = trimmed.match(/amazon\.com\/(?:dp|gp\/product|exec\/obidos\/ASIN)\/([A-Z0-9]{10})/i);
+        if (urlMatch) {
+            return urlMatch[1].toUpperCase();
+        }
+        const dpMatch = trimmed.match(/\/dp\/([A-Z0-9]{10})/i);
+        if (dpMatch) {
+            return dpMatch[1].toUpperCase();
+        }
+        return null;
+    };
+
+    const handleAddManualProduct = async () => {
+        const asin = extractASIN(manualAsin);
+        if (!asin) {
+            Toastify({ text: "Invalid ASIN or Amazon URL", style: { background: "#ef4444" } }).showToast();
+            return;
+        }
+
+        const existingProduct = Object.values(productMap).find(p => p.asin === asin);
+        if (existingProduct) {
+            Toastify({ text: "Product already in staging area", style: { background: "#f59e0b" } }).showToast();
+            setManualAsin('');
+            return;
+        }
+
+        setAddingProduct(true);
+        try {
+            const product = await fetchProductByASIN(asin, config.serpApiKey || '');
+            if (product) {
+                setProductMap(prev => ({ ...prev, [product.id]: product }));
+                Toastify({ text: `Added: ${product.title.substring(0, 30)}...`, style: { background: "#10b981" } }).showToast();
+                setManualAsin('');
+            } else {
+                Toastify({ text: "Failed to fetch product", style: { background: "#ef4444" } }).showToast();
+            }
+        } catch (e) {
+            Toastify({ text: "Error adding product", style: { background: "#ef4444" } }).showToast();
+        } finally {
+            setAddingProduct(false);
+        }
+    };
+
     const generateFinalHtml = () => {
         return editorNodes.map(node => {
             if (node.type === 'HTML') return node.content;
@@ -338,6 +387,30 @@ export const PostEditor: React.FC<PostEditorProps> = ({ post, config, onBack }) 
                              <button onClick={runDeepScan} disabled={status !== 'idle'} className="flex-1 py-4 bg-brand-600 hover:bg-brand-500 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-lg transition-all flex items-center justify-center gap-2">
                                 {status === 'analyzing' ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-bolt"></i>}
                                 <span>Scan</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Manual Product Add Card */}
+                    <div className="relative overflow-hidden rounded-[32px] bg-gradient-to-br from-orange-900/20 to-dark-900 border border-orange-500/20 p-8 group">
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/10 blur-[60px] rounded-full"></div>
+                        <h3 className="text-orange-400 font-black uppercase tracking-[4px] text-[11px] mb-2">Manual Add</h3>
+                        <p className="text-slate-400 text-xs mb-4 leading-relaxed">Add any Amazon product by ASIN or URL.</p>
+                        <div className="flex gap-2">
+                            <input 
+                                type="text" 
+                                value={manualAsin}
+                                onChange={(e) => setManualAsin(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && handleAddManualProduct()}
+                                placeholder="ASIN or Amazon URL"
+                                className="flex-1 px-4 py-3 bg-dark-800 border border-dark-700 rounded-xl text-white text-xs placeholder-dark-500 focus:outline-none focus:border-orange-500 transition-all"
+                            />
+                            <button 
+                                onClick={handleAddManualProduct} 
+                                disabled={addingProduct || !manualAsin.trim()}
+                                className="px-6 py-3 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 disabled:hover:bg-orange-600 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-lg transition-all flex items-center justify-center gap-2"
+                            >
+                                {addingProduct ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-plus"></i>}
                             </button>
                         </div>
                     </div>
