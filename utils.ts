@@ -2761,47 +2761,31 @@ export const resetProxyStats = (): void => {
 // EXPORTS
 // ============================================================================
 
-export default {
-  // Storage & Cache
+// Make sure all functions are exported individually first
+export {
   SecureStorage,
   IntelligenceCache,
-
-  // Proxy & Fetch
   fetchWithSmartProxy,
   getProxyStats,
   resetProxyStats,
-
-  // Sitemap
   fetchAndParseSitemap,
   normalizeSitemapUrl,
   parseSitemapXml,
-
-  // Content
   fetchPageContent,
   fetchRawPostContent,
   splitContentIntoBlocks,
   preExtractAmazonProducts,
-
-  // WordPress
   pushToWordPress,
   testConnection,
-
-  // AI
   callAIProvider,
   analyzeContentAndFindProduct,
-
-  // Amazon
   searchAmazonProduct,
   fetchProductByASIN,
   extractASIN,
-
-  // HTML Generation
   generateProductBoxHtml,
   generateComparisonTableHtml,
   generateProductSchema,
   generateFaqSchema,
-
-  // Utilities
   calculatePostPriority,
   runConcurrent,
   debounce,
