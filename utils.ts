@@ -2387,11 +2387,31 @@ export const throttle = <T extends (...args: any[]) => any>(
 };
 
 // ============================================================================
-// PRODUCT BOX HTML GENERATION (CONTINUED)
+// PRODUCT BOX HTML GENERATION
 // ============================================================================
 
 /**
- * Generate Tactical Link style product box
+ * Generate default verdict text (HELPER - NOT EXPORTED)
+ */
+const generateDefaultVerdict = (productTitle: string): string => {
+  const name = productTitle.split(' ').slice(0, 4).join(' ');
+  return `Engineered for users who demand excellence, the ${name} delivers professional-grade performance with meticulous attention to detail. Backed by thousands of verified reviews and trusted by industry professionals worldwide.`;
+};
+
+/**
+ * Generate default evidence claims (HELPER - NOT EXPORTED)
+ */
+const generateDefaultClaims = (): string[] => {
+  return [
+    'Premium build quality with attention to detail',
+    'Industry-leading performance metrics',
+    'Backed by comprehensive warranty',
+    'Trusted by thousands of verified buyers',
+  ];
+};
+
+/**
+ * Generate Tactical Link style product box (HELPER - NOT EXPORTED)
  */
 const generateTacticalLinkHtml = (
   product: ProductDetails,
@@ -2424,7 +2444,7 @@ const generateTacticalLinkHtml = (
 };
 
 /**
- * Generate Elite Bento style product box
+ * Generate Elite Bento style product box (HELPER - NOT EXPORTED)
  */
 const generateEliteBentoHtml = (
   product: ProductDetails,
@@ -2505,12 +2525,40 @@ const generateEliteBentoHtml = (
 <!-- /AmzWP Elite Bento Box -->`;
 };
 
+/**
+ * Generate product box HTML based on deployment mode (EXPORTED)
+ */
+export const generateProductBoxHtml = (
+  product: ProductDetails,
+  affiliateTag: string,
+  mode: DeploymentMode = 'ELITE_BENTO'
+): string => {
+  const tag = affiliateTag || 'amzwp-20';
+  const amazonUrl = `https://www.amazon.com/dp/${product.asin}?tag=${tag}`;
+  const stars = Math.min(5, Math.max(0, Math.round(product.rating || 4.5)));
+  const currentDate = new Date().toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+
+  if (mode === 'TACTICAL_LINK') {
+    return generateTacticalLinkHtml(product, amazonUrl, stars, tag);
+  }
+
+  return generateEliteBentoHtml(product, amazonUrl, stars, tag, currentDate);
+};
+
 // ============================================================================
 // COMPARISON TABLE HTML GENERATION
 // ============================================================================
 
 /**
- * Generate comparison table HTML
+ * Truncate string to specified length (HELPER)
+ */
+const truncateString = (str: string, maxLength: number): string => {
+  if (str.length <= maxLength) return str;
+  return str.substring(0, maxLength - 3) + '...';
+};
+
+/**
+ * Generate comparison table HTML (EXPORTED)
  */
 export const generateComparisonTableHtml = (
   data: ComparisonData,
@@ -2561,7 +2609,7 @@ export const generateComparisonTableHtml = (
             <td style="padding:2rem;text-align:center;background:${idx === 0 ? 'linear-gradient(180deg,#eff6ff,#fff)' : '#fff'};border-right:1px solid #e2e8f0;position:relative;">
               ${idx === 0 ? '<div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:#3b82f6;color:#fff;padding:4px 12px;border-radius:1rem;font-size:9px;font-weight:700;text-transform:uppercase;">Top Pick</div>' : ''}
               <img src="${p.imageUrl}" alt="${p.title}" style="max-width:150px;max-height:150px;object-fit:contain;margin-bottom:1rem;">
-              <h4 style="margin:0 0 8px;font-size:14px;font-weight:700;color:#0f172a;line-height:1.3;">${truncate(p.title, 50)}</h4>
+              <h4 style="margin:0 0 8px;font-size:14px;font-weight:700;color:#0f172a;line-height:1.3;">${truncateString(p.title, 50)}</h4>
               <div style="color:#f59e0b;margin-bottom:8px;font-size:12px;">${'★'.repeat(Math.round(p.rating || 4.5))}</div>
               <div style="font-size:1.5rem;font-weight:900;color:#0f172a;margin-bottom:1rem;">${p.price}</div>
               <a href="https://www.amazon.com/dp/${p.asin}?tag=${tag}" target="_blank" rel="nofollow sponsored noopener" style="display:inline-block;padding:10px 20px;background:#1e293b;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;font-size:11px;text-transform:uppercase;">Check Price</a>
@@ -2583,7 +2631,7 @@ export const generateComparisonTableHtml = (
 // ============================================================================
 
 /**
- * Generate JSON-LD schema for product
+ * Generate JSON-LD schema for product (EXPORTED)
  */
 export const generateProductSchema = (
   product: ProductDetails,
@@ -2625,7 +2673,7 @@ export const generateProductSchema = (
 };
 
 /**
- * Generate FAQ schema
+ * Generate FAQ schema (EXPORTED)
  */
 export const generateFaqSchema = (faqs: FAQItem[]): string => {
   if (!faqs || faqs.length === 0) return '';
@@ -2651,17 +2699,15 @@ export const generateFaqSchema = (faqs: FAQItem[]): string => {
 // ============================================================================
 
 /**
- * Extract ASIN from Amazon URL or raw ASIN string
+ * Extract ASIN from Amazon URL or raw ASIN string (EXPORTED)
  */
 export const extractASIN = (input: string): string | null => {
   const trimmed = input.trim();
 
-  // Check if it's already a valid ASIN
   if (/^[A-Z0-9]{10}$/i.test(trimmed)) {
     return trimmed.toUpperCase();
   }
 
-  // Try to extract from URL patterns
   const patterns = [
     /amazon\.com\/(?:dp|gp\/product|exec\/obidos\/ASIN)\/([A-Z0-9]{10})/i,
     /\/dp\/([A-Z0-9]{10})/i,
@@ -2681,40 +2727,33 @@ export const extractASIN = (input: string): string | null => {
 };
 
 // ============================================================================
-// PRE-EXTRACT AMAZON PRODUCTS (FROM HTML)
+// PRE-EXTRACT AMAZON PRODUCTS
 // ============================================================================
 
 /**
- * Pre-extract existing Amazon products from HTML content
+ * Pre-extract existing Amazon products from HTML content (EXPORTED)
  */
 export const preExtractAmazonProducts = (html: string): { asin: string; context: string }[] => {
   const products: { asin: string; context: string }[] = [];
   const seenAsins = new Set<string>();
 
-  // Pattern 1: Amazon product URLs
-  const urlPatterns = [
-    /amazon\.com\/(?:dp|gp\/product)\/([A-Z0-9]{10})/gi,
-    /amzn\.to\/[^\s"'<>]+/gi,
-  ];
-
-  for (const pattern of urlPatterns) {
-    const matches = html.matchAll(pattern);
-    for (const match of matches) {
-      const asin = match[1];
-      if (asin && !seenAsins.has(asin)) {
-        seenAsins.add(asin);
-        // Try to get surrounding context
-        const start = Math.max(0, match.index! - 100);
-        const end = Math.min(html.length, match.index! + match[0].length + 100);
-        const context = stripHtml(html.substring(start, end));
-        products.push({ asin, context });
-      }
+  const urlPattern = /amazon\.com\/(?:dp|gp\/product)\/([A-Z0-9]{10})/gi;
+  const matches = html.matchAll(urlPattern);
+  
+  for (const match of matches) {
+    const asin = match[1];
+    if (asin && !seenAsins.has(asin)) {
+      seenAsins.add(asin);
+      const start = Math.max(0, match.index! - 100);
+      const end = Math.min(html.length, match.index! + match[0].length + 100);
+      const context = html.substring(start, end).replace(/<[^>]+>/g, ' ').trim();
+      products.push({ asin, context });
     }
   }
 
-  // Pattern 2: ASIN in data attributes or comments
   const asinPattern = /(?:asin|product-id|data-asin)[=:]["']?([A-Z0-9]{10})/gi;
   const asinMatches = html.matchAll(asinPattern);
+  
   for (const match of asinMatches) {
     const asin = match[1];
     if (asin && !seenAsins.has(asin)) {
@@ -2727,11 +2766,11 @@ export const preExtractAmazonProducts = (html: string): { asin: string; context:
 };
 
 // ============================================================================
-// PROXY STATS (FOR DEBUGGING)
+// PROXY STATS
 // ============================================================================
 
 /**
- * Get proxy performance statistics
+ * Get proxy performance statistics (EXPORTED)
  */
 export const getProxyStats = (): Record<string, { latency: number; failures: number; successes: number }> => {
   const stats: Record<string, { latency: number; failures: number; successes: number }> = {};
@@ -2748,7 +2787,7 @@ export const getProxyStats = (): Record<string, { latency: number; failures: num
 };
 
 /**
- * Reset all proxy statistics
+ * Reset all proxy statistics (EXPORTED)
  */
 export const resetProxyStats = (): void => {
   proxyLatencyMap.clear();
@@ -2758,57 +2797,33 @@ export const resetProxyStats = (): void => {
 };
 
 // ============================================================================
-// EXPORTS - Named exports (for tree-shaking and direct imports)
+// DEFAULT EXPORT (Optional - for backward compatibility)
 // ============================================================================
 
-// These are already exported with 'export const' throughout the file:
-// - SecureStorage
-// - IntelligenceCache
-// - fetchWithSmartProxy
-// - etc.
-
-// If you need a default export for backward compatibility:
-const utilsExports = {
-  // Storage & Cache
+export default {
   SecureStorage,
   IntelligenceCache,
-
-  // Proxy & Fetch
   fetchWithSmartProxy,
   getProxyStats,
   resetProxyStats,
-
-  // Sitemap
   fetchAndParseSitemap,
   normalizeSitemapUrl,
   parseSitemapXml,
-
-  // Content
   fetchPageContent,
   fetchRawPostContent,
   splitContentIntoBlocks,
   preExtractAmazonProducts,
-
-  // WordPress
   pushToWordPress,
   testConnection,
-
-  // AI
   callAIProvider,
   analyzeContentAndFindProduct,
-
-  // Amazon
   searchAmazonProduct,
   fetchProductByASIN,
   extractASIN,
-
-  // HTML Generation
   generateProductBoxHtml,
   generateComparisonTableHtml,
   generateProductSchema,
   generateFaqSchema,
-
-  // Utilities
   calculatePostPriority,
   runConcurrent,
   debounce,
@@ -2816,5 +2831,3 @@ const utilsExports = {
   validateManualUrl,
   createBlogPostFromUrl,
 };
-
-export default utilsExports;
