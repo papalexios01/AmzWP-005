@@ -32,6 +32,42 @@ import {
   BoxStyle 
 } from './types';
 
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+const hashString = (str: string): string => {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36);
+};
+
+const truncate = (str: string, maxLength: number): string => {
+  if (!str) return '';
+  if (str.length <= maxLength) return str;
+  return str.substring(0, maxLength - 3) + '...';
+};
+
+const stripHtml = (html: string): string => {
+  if (!html) return '';
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+
+
+
 // ============================================================================
 // CONSTANTS & CONFIGURATION
 // ============================================================================
@@ -2059,15 +2095,6 @@ export const getProxyStats = (): Record<string, { latency: number; failures: num
   return stats;
 };
 
-/**
- * Reset all proxy statistics (EXPORTED)
- */
-export const resetProxyStats = (): void => {
-  proxyLatencyMap.clear();
-  proxyFailureCount.clear();
-  proxySuccessCount.clear();
-  console.log('[Proxy] Stats reset');
-};
 
 // ============================================================================
 // DEFAULT EXPORT (Optional - for backward compatibility)
