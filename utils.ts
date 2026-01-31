@@ -266,29 +266,29 @@ interface ConnectionTestResult {
 }
 
 // ============================================================================
-// CORS PROXY SYSTEM - ENTERPRISE GRADE
+// CORS PROXY SYSTEM - ENTERPRISE GRADE WITH MULTIPLE FALLBACKS
 // ============================================================================
 
 const CORS_PROXIES = [
+  {
+    name: 'corsproxy-org',
+    transform: (url: string) => `https://corsproxy.org/?${encodeURIComponent(url)}`,
+    timeout: 12000,
+  },
   {
     name: 'allorigins-raw',
     transform: (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
     timeout: 15000,
   },
   {
-    name: 'corsproxy-io',
-    transform: (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-    timeout: 15000,
+    name: 'cors-anywhere-herokuapp',
+    transform: (url: string) => `https://cors-anywhere.herokuapp.com/${url}`,
+    timeout: 12000,
   },
   {
-    name: 'thingproxy',
-    transform: (url: string) => `https://thingproxy.freeboard.io/fetch/${url}`,
-    timeout: 15000,
-  },
-  {
-    name: 'codetabs',
-    transform: (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-    timeout: 20000,
+    name: 'crossorigin-me',
+    transform: (url: string) => `https://crossorigin.me/${url}`,
+    timeout: 12000,
   },
   {
     name: 'allorigins-get',
@@ -331,11 +331,12 @@ export const fetchWithSmartProxy = async (url: string, options: { timeout?: numb
   const sortedProxies = getSortedProxies();
   const errors: string[] = [];
 
-  // Try direct fetch first
+  // Try direct fetch first (for same-origin or CORS-enabled sites)
   try {
     console.log(`[Fetch] Direct: ${url.substring(0, 60)}...`);
-    const response = await fetchWithTimeout(url, 10000, {
+    const response = await fetchWithTimeout(url, 8000, {
       headers: { 'Accept': 'text/xml, application/xml, text/html, */*' },
+      mode: 'cors',
     });
     if (response.ok) {
       const text = await response.text();
@@ -478,38 +479,61 @@ export const createBlogPostFromUrl = (url: string, index: number): BlogPost => {
   };
 };
 
+/**
+ * Enterprise-grade sitemap fetching with WordPress REST API as primary method
+ */
 export const fetchAndParseSitemap = async (
   inputUrl: string,
   config: AppConfig
 ): Promise<BlogPost[]> => {
-  console.log('[Sitemap] ===== STARTING SCAN =====');
+  console.log('[Sitemap] ===== STARTING ENTERPRISE SCAN =====');
   console.log('[Sitemap] Input URL:', inputUrl);
 
-  const sitemapUrls = normalizeSitemapUrl(inputUrl);
-  console.log('[Sitemap] Will try these URLs:', sitemapUrls);
+  // Extract base URL from input
+  let baseUrl = inputUrl.trim().replace(/\/+$/, '');
+  if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+    baseUrl = 'https://' + baseUrl;
+  }
 
+  try {
+    const urlObj = new URL(baseUrl);
+    baseUrl = `${urlObj.protocol}//${urlObj.host}`;
+  } catch {
+    // Keep as-is if URL parsing fails
+  }
+
+  console.log('[Sitemap] Base URL:', baseUrl);
+
+  // STRATEGY 1: WordPress REST API (Primary - Most Reliable, No CORS Issues)
+  if (config.wpUrl && config.wpUser && config.wpAppPassword) {
+    console.log('[Sitemap] Attempting WordPress REST API fetch...');
+    try {
+      const wpPosts = await fetchAllPostsViaWordPressAPI(config);
+      if (wpPosts.length > 0) {
+        console.log(`[Sitemap] WordPress REST API returned ${wpPosts.length} posts`);
+        return wpPosts;
+      }
+    } catch (wpError: any) {
+      console.warn('[Sitemap] WordPress REST API failed:', wpError.message);
+    }
+  }
+
+  // STRATEGY 2: Try sitemap XML with proxies
+  const sitemapUrls = normalizeSitemapUrl(inputUrl);
   const allPosts: BlogPost[] = [];
   const seenUrls = new Set<string>();
-  let foundValidSitemap = false;
   let lastError = '';
 
   for (const sitemapUrl of sitemapUrls) {
-    if (foundValidSitemap && allPosts.length > 0) break;
+    if (allPosts.length > 0) break;
 
     try {
       console.log(`[Sitemap] Trying: ${sitemapUrl}`);
-      
-      const xml = await fetchWithSmartProxy(sitemapUrl, { timeout: 25000 });
-      
-      console.log(`[Sitemap] Got response, length: ${xml.length}`);
-      
-      if (!xml || xml.length < 100) {
-        console.log('[Sitemap] Response too short, skipping');
-        continue;
-      }
 
-      if (!xml.includes('<') || !xml.includes('loc')) {
-        console.log('[Sitemap] Response does not look like XML sitemap');
+      const xml = await fetchWithSmartProxy(sitemapUrl, { timeout: 30000 });
+
+      if (!xml || xml.length < 100 || !xml.includes('<') || !xml.includes('loc')) {
+        console.log('[Sitemap] Invalid response, skipping');
         continue;
       }
 
@@ -518,31 +542,33 @@ export const fetchAndParseSitemap = async (
 
       if (urls.length === 0) continue;
 
+      // Check if this is a sitemap index
       const isIndex = urls.every(u => u.includes('sitemap') || u.endsWith('.xml'));
 
-      if (isIndex && urls.length < 100) {
-        console.log('[Sitemap] Detected sitemap index, fetching sub-sitemaps...');
-        
-        for (const subSitemapUrl of urls.slice(0, 15)) {
-          try {
-            await new Promise(r => setTimeout(r, 300));
-            console.log(`[Sitemap] Fetching sub-sitemap: ${subSitemapUrl}`);
-            const subXml = await fetchWithSmartProxy(subSitemapUrl, { timeout: 20000 });
-            const subUrls = parseSitemapXml(subXml);
-            console.log(`[Sitemap] Sub-sitemap has ${subUrls.length} URLs`);
+      if (isIndex) {
+        console.log('[Sitemap] Detected sitemap index, fetching all sub-sitemaps...');
 
-            for (const pageUrl of subUrls) {
+        // Fetch ALL sub-sitemaps concurrently for speed
+        const subSitemapResults = await Promise.allSettled(
+          urls.map(async (subUrl, idx) => {
+            await sleep(idx * 100); // Stagger requests slightly
+            console.log(`[Sitemap] Fetching sub-sitemap ${idx + 1}/${urls.length}: ${subUrl}`);
+            const subXml = await fetchWithSmartProxy(subUrl, { timeout: 25000 });
+            return parseSitemapXml(subXml);
+          })
+        );
+
+        for (const result of subSitemapResults) {
+          if (result.status === 'fulfilled' && result.value.length > 0) {
+            for (const pageUrl of result.value) {
               const normalizedUrl = pageUrl.toLowerCase();
               if (!seenUrls.has(normalizedUrl)) {
                 seenUrls.add(normalizedUrl);
                 allPosts.push(createBlogPostFromUrl(pageUrl, allPosts.length));
               }
             }
-          } catch (subError: any) {
-            console.warn(`[Sitemap] Sub-sitemap failed: ${subSitemapUrl} - ${subError.message}`);
           }
         }
-        foundValidSitemap = allPosts.length > 0;
       } else {
         for (const pageUrl of urls) {
           const normalizedUrl = pageUrl.toLowerCase();
@@ -551,13 +577,11 @@ export const fetchAndParseSitemap = async (
             allPosts.push(createBlogPostFromUrl(pageUrl, allPosts.length));
           }
         }
-        foundValidSitemap = true;
       }
 
     } catch (error: any) {
       lastError = error.message;
       console.warn(`[Sitemap] Failed: ${sitemapUrl} - ${error.message}`);
-      continue;
     }
   }
 
@@ -566,14 +590,204 @@ export const fetchAndParseSitemap = async (
 
   if (allPosts.length === 0) {
     throw new Error(
-      `No sitemap found for "${inputUrl}". ` +
-      `Tried ${sitemapUrls.length} URLs. ` +
-      `Last error: ${lastError || 'Unknown'}. ` +
-      `Try "WP API" button or "Add URL Manually" instead.`
+      `Could not fetch posts from "${inputUrl}". ` +
+      `For best results, configure WordPress REST API credentials. ` +
+      `Last error: ${lastError || 'All methods failed'}`
     );
   }
 
   return allPosts;
+};
+
+/**
+ * Fetch ALL posts via WordPress REST API with pagination
+ */
+const fetchAllPostsViaWordPressAPI = async (config: AppConfig): Promise<BlogPost[]> => {
+  if (!config.wpUrl || !config.wpUser || !config.wpAppPassword) {
+    throw new Error('WordPress credentials not configured');
+  }
+
+  const apiBase = config.wpUrl.replace(/\/$/, '') + '/wp-json/wp/v2';
+  const auth = btoa(`${config.wpUser}:${config.wpAppPassword}`);
+  const allPosts: BlogPost[] = [];
+  let page = 1;
+  const perPage = 100;
+  let hasMore = true;
+
+  console.log('[WP-API] Fetching all posts with pagination...');
+
+  while (hasMore) {
+    try {
+      const url = `${apiBase}/posts?page=${page}&per_page=${perPage}&status=publish&_fields=id,title,link,content`;
+
+      console.log(`[WP-API] Fetching page ${page}...`);
+
+      const response = await fetchWithTimeout(url, 20000, {
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        if (response.status === 400) {
+          // No more pages
+          hasMore = false;
+          break;
+        }
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const posts = await response.json();
+
+      if (!posts || posts.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      console.log(`[WP-API] Page ${page}: Got ${posts.length} posts`);
+
+      for (const post of posts) {
+        const title = post.title?.rendered || 'Untitled';
+        const content = post.content?.rendered || '';
+        const link = post.link || '';
+
+        // Calculate proper priority based on content analysis
+        const analysis = analyzePostForPriority(title, content);
+
+        allPosts.push({
+          id: post.id,
+          title: decodeHtmlEntities(title),
+          url: link,
+          postType: 'post',
+          priority: analysis.priority,
+          monetizationStatus: analysis.status,
+        });
+      }
+
+      // Check if there are more pages
+      const totalPages = parseInt(response.headers.get('X-WP-TotalPages') || '1', 10);
+      hasMore = page < totalPages;
+      page++;
+
+      // Small delay between pages
+      if (hasMore) await sleep(200);
+
+    } catch (error: any) {
+      console.error(`[WP-API] Page ${page} failed:`, error.message);
+      hasMore = false;
+    }
+  }
+
+  console.log(`[WP-API] Total posts fetched: ${allPosts.length}`);
+  return allPosts;
+};
+
+/**
+ * Decode HTML entities in string
+ */
+const decodeHtmlEntities = (text: string): string => {
+  if (!text) return '';
+  return text
+    .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(parseInt(num, 10)))
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+};
+
+/**
+ * Analyze post content to determine priority and monetization status
+ */
+const analyzePostForPriority = (title: string, content: string): {
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  status: 'monetized' | 'opportunity';
+} => {
+  const titleLower = title.toLowerCase();
+  const contentLower = content.toLowerCase();
+
+  // Check for existing affiliate links (already monetized)
+  const affiliatePatterns = [
+    /amazon\.com\/.*?tag=/i,
+    /amzn\.to\//i,
+    /affiliate/i,
+    /product-box/i,
+    /aawp-product/i,
+    /wp-block-flavor-flavor-amz-product/i,
+    /data-asin=/i,
+    /associate-?id/i,
+    /ref=.*?tag=/i,
+  ];
+
+  const isMonetized = affiliatePatterns.some(pattern => pattern.test(content));
+
+  if (isMonetized) {
+    return { priority: 'low', status: 'monetized' };
+  }
+
+  // CRITICAL: Review articles, product comparisons, "best" lists
+  const criticalPatterns = [
+    /\breview\b/i,
+    /\bbest\s+\d*\s*(picks?|choice|options?|products?)?/i,
+    /\btop\s+\d+/i,
+    /\bvs\.?\b/i,
+    /\bversus\b/i,
+    /\bcomparison\b/i,
+    /\bcompare\b/i,
+    /\bbuying\s+guide/i,
+    /\bbuyer'?s?\s+guide/i,
+    /\bworth\s+(it|buying|the\s+money)/i,
+    /\bshould\s+(you|i)\s+buy/i,
+  ];
+
+  if (criticalPatterns.some(p => p.test(titleLower))) {
+    return { priority: 'critical', status: 'opportunity' };
+  }
+
+  // HIGH: Product-related content, how-tos with products
+  const highPatterns = [
+    /\bproduct/i,
+    /\bgear\b/i,
+    /\bequipment\b/i,
+    /\btools?\b/i,
+    /\bgadget/i,
+    /\bdevice/i,
+    /\baccessor/i,
+    /\bwatch\b/i,
+    /\btracker\b/i,
+    /\bmonitor\b/i,
+    /\brecommend/i,
+    /\balternative/i,
+    /\baffordable\b/i,
+    /\bbudget\b/i,
+    /\bpremium\b/i,
+    /\bcheap\b/i,
+    /\bprice\b/i,
+    /\bcost\b/i,
+    /\bbrand\b/i,
+  ];
+
+  if (highPatterns.some(p => p.test(titleLower) || p.test(contentLower.substring(0, 2000)))) {
+    return { priority: 'high', status: 'opportunity' };
+  }
+
+  // MEDIUM: General content that might have monetization potential
+  const mediumPatterns = [
+    /\bhow\s+to\b/i,
+    /\btips?\b/i,
+    /\bguide\b/i,
+    /\btutorial\b/i,
+    /\bideas?\b/i,
+    /\bways?\s+to\b/i,
+  ];
+
+  if (mediumPatterns.some(p => p.test(titleLower))) {
+    return { priority: 'medium', status: 'opportunity' };
+  }
+
+  return { priority: 'low', status: 'opportunity' };
 };
 
 
@@ -1541,65 +1755,125 @@ const generateDefaultFaqs = (productTitle: string): FAQItem[] => {
 // ============================================================================
 
 /**
- * Search Amazon via SerpAPI
+ * Decrypt API key if it's base64 encoded
+ */
+const decryptApiKey = (key: string): string => {
+  if (!key) return '';
+  try {
+    // Check if it looks like base64 encoded
+    if (/^[A-Za-z0-9+/=]+$/.test(key) && key.length > 20) {
+      const decoded = SecureStorage.decryptSync(key);
+      // Verify it looks like a valid SerpAPI key (alphanumeric with possible hyphens)
+      if (/^[a-f0-9]{64}$/i.test(decoded) || decoded.length >= 32) {
+        return decoded;
+      }
+    }
+    return key;
+  } catch {
+    return key;
+  }
+};
+
+/**
+ * Search Amazon via SerpAPI - Enterprise Grade
  */
 export const searchAmazonProduct = async (
   query: string,
   apiKey: string
 ): Promise<Partial<ProductDetails>> => {
-  if (!apiKey) return {};
+  // Decrypt the API key if needed
+  const decryptedKey = decryptApiKey(apiKey);
+
+  if (!decryptedKey) {
+    console.warn('[SerpAPI] No API key provided');
+    return {};
+  }
 
   const cacheKey = `serp_${hashString(query.toLowerCase())}`;
   const cached = IntelligenceCache.get<Partial<ProductDetails>>(cacheKey);
-  if (cached) {
+  if (cached && cached.asin) {
     console.log('[SerpAPI] Returning cached result for:', query.substring(0, 30));
     return cached;
   }
 
-  try {
-    const url = `https://serpapi.com/search.json?engine=amazon&amazon_domain=amazon.com&k=${encodeURIComponent(query)}&api_key=${apiKey}`;
+  console.log('[SerpAPI] Searching for:', query.substring(0, 50));
 
-    const response = await fetchWithTimeout(url, 15000);
+  try {
+    // Use correct SerpAPI parameter name
+    const url = `https://serpapi.com/search.json?engine=amazon&amazon_domain=amazon.com&k=${encodeURIComponent(query)}&api_key=${encodeURIComponent(decryptedKey)}`;
+
+    console.log('[SerpAPI] Making API request...');
+
+    const response = await fetchWithTimeout(url, 20000);
+
     if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      console.error('[SerpAPI] API error:', response.status, errorText.substring(0, 100));
       throw new Error(`SerpAPI error: ${response.status}`);
     }
 
     const data = await response.json();
-    const result = data.organic_results?.[0];
+
+    console.log('[SerpAPI] Response received, results:', data.organic_results?.length || 0);
+
+    // Try to find best result from organic_results or shopping_results
+    const result = data.organic_results?.[0] || data.shopping_results?.[0];
 
     if (!result) {
       console.warn('[SerpAPI] No results for:', query);
       return {};
     }
 
+    console.log('[SerpAPI] Found product:', result.title?.substring(0, 50));
+
+    // Extract price properly - handle various formats
+    let price = '$XX.XX';
+    if (result.price?.raw) {
+      price = result.price.raw;
+    } else if (result.price?.current) {
+      price = result.price.current;
+    } else if (result.extracted_price) {
+      price = `$${result.extracted_price}`;
+    } else if (typeof result.price === 'string') {
+      price = result.price;
+    }
+
     const product: Partial<ProductDetails> = {
-      asin: result.asin,
-      title: result.title,
-      price: result.price?.raw || result.price?.current || '$XX.XX',
-      imageUrl: result.thumbnail || result.image,
+      asin: result.asin || '',
+      title: result.title || query,
+      price: price,
+      imageUrl: result.thumbnail || result.image || result.primary_image || '',
       rating: parseFloat(result.rating) || 4.5,
-      reviewCount: parseInt(String(result.reviews || '0').replace(/[^0-9]/g, '')) || 1000,
-      prime: result.is_prime || false,
+      reviewCount: parseInt(String(result.reviews || result.reviews_total || '0').replace(/[^0-9]/g, '')) || 0,
+      prime: result.is_prime || result.prime || false,
       brand: result.brand || '',
     };
+
+    console.log('[SerpAPI] Parsed product:', product.title?.substring(0, 40), 'ASIN:', product.asin, 'Price:', product.price);
 
     IntelligenceCache.set(cacheKey, product, CACHE_TTL_MS);
     return product;
 
   } catch (error: any) {
-    console.warn('[searchAmazonProduct] Error:', error.message);
+    console.error('[searchAmazonProduct] Error:', error.message);
     return {};
   }
 };
 
 /**
- * Fetch product details by ASIN
+ * Fetch product details by ASIN - Enterprise Grade
  */
 export const fetchProductByASIN = async (
   asin: string,
   apiKey: string
 ): Promise<ProductDetails | null> => {
-  if (!apiKey || !asin) return null;
+  // Decrypt the API key if needed
+  const decryptedKey = decryptApiKey(apiKey);
+
+  if (!decryptedKey || !asin) {
+    console.warn('[fetchProductByASIN] Missing API key or ASIN');
+    return null;
+  }
 
   // Validate ASIN format
   if (!/^[A-Z0-9]{10}$/i.test(asin)) {
@@ -1608,17 +1882,21 @@ export const fetchProductByASIN = async (
   }
 
   const cached = IntelligenceCache.getProduct(asin);
-  if (cached) {
+  if (cached && cached.price !== '$XX.XX') {
     console.log('[SerpAPI] Returning cached product:', asin);
     return cached;
   }
 
-  try {
-    const url = `https://serpapi.com/search.json?engine=amazon_product&product_id=${asin}&amazon_domain=amazon.com&api_key=${apiKey}`;
+  console.log('[SerpAPI] Fetching product by ASIN:', asin);
 
-    const response = await fetchWithTimeout(url, 15000);
+  try {
+    const url = `https://serpapi.com/search.json?engine=amazon_product&product_id=${asin}&amazon_domain=amazon.com&api_key=${encodeURIComponent(decryptedKey)}`;
+
+    const response = await fetchWithTimeout(url, 20000);
+
     if (!response.ok) {
-      console.warn('[fetchProductByASIN] API error:', response.status);
+      const errorText = await response.text().catch(() => '');
+      console.error('[fetchProductByASIN] API error:', response.status, errorText.substring(0, 100));
       return null;
     }
 
@@ -1626,34 +1904,53 @@ export const fetchProductByASIN = async (
     const result = data.product_results;
 
     if (!result) {
-      console.warn('[fetchProductByASIN] No product found:', asin);
+      console.warn('[fetchProductByASIN] No product found for ASIN:', asin);
       return null;
     }
+
+    console.log('[SerpAPI] Found product:', result.title?.substring(0, 50));
+
+    // Extract price properly
+    let price = '$XX.XX';
+    if (result.price?.raw) {
+      price = result.price.raw;
+    } else if (result.price?.current) {
+      price = result.price.current;
+    } else if (result.buybox_winner?.price?.raw) {
+      price = result.buybox_winner.price.raw;
+    } else if (result.buybox_winner?.price?.value) {
+      price = `$${result.buybox_winner.price.value}`;
+    }
+
+    // Get image
+    const imageUrl = result.main_image || result.images?.[0]?.link || result.images?.[0] || '';
 
     const product: ProductDetails = {
       id: `prod-${asin}-${Date.now()}`,
       asin,
       title: result.title || 'Unknown Product',
-      price: result.price?.raw || result.price?.current || '$XX.XX',
-      imageUrl: result.main_image || result.images?.[0] || 'https://via.placeholder.com/300',
+      price: price,
+      imageUrl: imageUrl,
       rating: parseFloat(result.rating) || 4.5,
-      reviewCount: parseInt(String(result.reviews_total || '0').replace(/[^0-9]/g, '')) || 1000,
-      prime: result.is_prime || false,
+      reviewCount: parseInt(String(result.reviews_total || result.ratings_total || '0').replace(/[^0-9]/g, '')) || 0,
+      prime: result.is_prime || result.buybox_winner?.is_prime || false,
       brand: result.brand || '',
-      category: result.category?.[0]?.name || 'General',
+      category: result.categories_flat || result.category?.[0]?.name || 'General',
       verdict: generateDefaultVerdict(result.title || 'This product'),
-      evidenceClaims: result.feature_bullets?.slice(0, 4) || generateDefaultClaims(),
+      evidenceClaims: result.feature_bullets?.slice(0, 4) || result.about_item?.slice(0, 4) || generateDefaultClaims(),
       faqs: generateDefaultFaqs(result.title || 'This product'),
-      specs: {},
+      specs: result.specifications_flat || {},
       insertionIndex: 1,
       deploymentMode: 'ELITE_BENTO',
     };
+
+    console.log('[SerpAPI] Parsed product:', product.title?.substring(0, 40), 'Price:', product.price, 'Image:', product.imageUrl?.substring(0, 50));
 
     IntelligenceCache.setProduct(asin, product);
     return product;
 
   } catch (error: any) {
-    console.warn('[fetchProductByASIN] Error:', error.message);
+    console.error('[fetchProductByASIN] Error:', error.message);
     return null;
   }
 };
