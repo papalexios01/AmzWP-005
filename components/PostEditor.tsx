@@ -75,18 +75,32 @@ export const PostEditor: React.FC<PostEditorProps> = ({ post, config, onBack }) 
 
     // Initialization Logic
     useEffect(() => {
+        let isMounted = true;
+
         const init = async () => {
             setStatus('fetching');
+
             try {
+                console.log('[PostEditor] Starting initialization for post:', post.id);
+
                 // 1. Fetch Content
                 const result = await fetchRawPostContent(config, post.id, post.url || "");
+
+                if (!isMounted) return;
+
+                console.log('[PostEditor] Fetched content, length:', result.content?.length || 0);
+
+                if (!result.content || result.content.length < 10) {
+                    throw new Error('No content received from WordPress API');
+                }
+
                 setCurrentId(result.resolvedId);
-                
+
                 // 2. Hydrate Products from Cache or Props
                 let initialProducts = post.activeProducts || [];
                 const contentHash = `v3_${post.title}_${result.content.length}`;
                 const cached = IntelligenceCache.getAnalysis(contentHash);
-                
+
                 let initialComparison: ComparisonData | undefined = undefined;
 
                 if (cached) {
@@ -97,19 +111,29 @@ export const PostEditor: React.FC<PostEditorProps> = ({ post, config, onBack }) 
                 // 3. Build Product Map
                 const pMap: Record<string, ProductDetails> = {};
                 initialProducts.forEach(p => pMap[p.id] = p);
+
+                if (!isMounted) return;
+
                 setProductMap(pMap);
 
                 // 4. Construct Editor Nodes
                 const rawBlocks = splitContentIntoBlocks(result.content || '');
+
+                console.log('[PostEditor] Split into', rawBlocks.length, 'blocks');
+
+                if (rawBlocks.length === 0) {
+                    throw new Error('Failed to parse content into blocks');
+                }
+
                 const nodes: EditorNode[] = [];
-                
+
                 rawBlocks.forEach((block, idx) => {
                     nodes.push({ id: `block-${Date.now()}-${idx}`, type: 'HTML', content: block });
                 });
 
                 // Initial Placement Strategy
                 const placedProducts = initialProducts.filter(p => p.insertionIndex > -1).sort((a, b) => a.insertionIndex - b.insertionIndex);
-                
+
                 let offset = 0;
                 placedProducts.forEach(p => {
                     const targetIndex = Math.min(p.insertionIndex + offset, nodes.length);
@@ -119,7 +143,7 @@ export const PostEditor: React.FC<PostEditorProps> = ({ post, config, onBack }) 
 
                 // Auto-inject comparison table if detected and not present
                 if (initialComparison) {
-                    nodes.splice(1, 0, { // Inject after first block (usually Intro)
+                    nodes.splice(1, 0, {
                         id: `comp-table-${Date.now()}`,
                         type: 'COMPARISON',
                         comparisonData: initialComparison
@@ -127,16 +151,30 @@ export const PostEditor: React.FC<PostEditorProps> = ({ post, config, onBack }) 
                     offset++;
                 }
 
+                if (!isMounted) return;
+
+                console.log('[PostEditor] Initializing with', nodes.length, 'nodes');
+
                 // Use resetHistory to set initial state without creating undo history
                 resetHistory(nodes);
                 setStatus('idle');
+
+                console.log('[PostEditor] Initialization complete');
             } catch (e: any) {
+                if (!isMounted) return;
+
+                console.error('[PostEditor] Initialization failed:', e);
                 setStatus('error');
-                toast("Intelligence Protocol Link Failure");
+                toast(`Failed to load content: ${e.message}`);
             }
         };
+
         init();
-    }, [post.id, config, resetHistory]);
+
+        return () => {
+            isMounted = false;
+        };
+    }, [post.id]);
 
     // --- AUTO-SAVE SYSTEM ---
     
@@ -327,22 +365,38 @@ export const PostEditor: React.FC<PostEditorProps> = ({ post, config, onBack }) 
 
     const runDeepScan = async () => {
         setStatus('analyzing');
+
         try {
+            console.log('[PostEditor] Starting deep scan...');
+
+            // Validate AI configuration
+            if (!config.aiProvider) {
+                throw new Error('AI provider not configured. Please configure AI settings.');
+            }
+
             const currentHtml = editorNodes.filter(n => n.type === 'HTML').map(n => n.content).join('');
+
+            if (!currentHtml || currentHtml.trim().length < 50) {
+                throw new Error('Insufficient content for analysis. Please ensure content is loaded.');
+            }
+
+            console.log('[PostEditor] Analyzing', currentHtml.length, 'characters of content');
+
             const res = await analyzeContentAndFindProduct(post.title, currentHtml, config);
-            
+
+            console.log('[PostEditor] Analysis complete. Found', res.detectedProducts.length, 'products');
+
             if (res.detectedProducts.length > 0) {
                 const newPMap = { ...productMap };
                 res.detectedProducts.forEach(p => newPMap[p.id] = p);
                 setProductMap(newPMap);
-                toast(`Deep Scan Protocol Locked: ${res.detectedProducts.length} Assets Registered`, { style: { background: "#0ea5e9" } });
+                toast(`Deep Scan Complete: ${res.detectedProducts.length} Products Found`, { style: { background: "#0ea5e9" }, duration: 3000 });
             } else {
-                toast("Zero Match: No monetization entities mapped.");
+                toast("No products detected. Try a more product-focused article.", { duration: 4000 });
             }
 
             // Handle Comparison Table
             if (res.comparison) {
-                // Remove existing comparison nodes if any to prevent dups (optional, simplified here to just add)
                 const newNodes = [...editorNodes];
                 // Inject near top
                 newNodes.splice(1, 0, {
@@ -351,15 +405,17 @@ export const PostEditor: React.FC<PostEditorProps> = ({ post, config, onBack }) 
                     comparisonData: res.comparison
                 });
                 setEditorNodes(newNodes);
-                toast("Comparison Matrix Generated", { style: { background: "#0ea5e9" } });
+                toast("Comparison Table Added", { style: { background: "#0ea5e9" } });
             }
 
         } catch (e: any) {
-            console.error(e);
+            console.error('[PostEditor] Deep scan failed:', e);
             const errorMsg = e.message || "Unknown error";
-            const displayMsg = errorMsg.length > 80 ? errorMsg.substring(0, 77) + "..." : errorMsg;
-            toast(`Intelligence Failure: ${displayMsg}`, { duration: 5000 });
-        } finally { setStatus('idle'); }
+            const displayMsg = errorMsg.length > 100 ? errorMsg.substring(0, 97) + "..." : errorMsg;
+            toast(`Scan Failed: ${displayMsg}`, { duration: 6000 });
+        } finally {
+            setStatus('idle');
+        }
     };
 
     const deleteNode = (id: string) => {

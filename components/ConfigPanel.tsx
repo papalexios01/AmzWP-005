@@ -479,19 +479,30 @@ export const ConfigPanel: React.FC<ConfigPanelProps> = ({ onSave, initialConfig 
 
   const handleTestConnection = useCallback(async () => {
     const validation = validateConfig(config, 'wp');
-        try {
+
     if (!validation.isValid) {
-              toast.success('✓ Connected to WordPress!');
-            setTestConnectionStatus('success');
+      setValidationErrors(validation.errors);
+      toast.error('Please fill in all required fields');
+      return;
+    }
+
+    setTestConnectionStatus('testing');
+    setValidationErrors({});
+
+    try {
+      const result = await testConnection(config);
+
+      if (result.success) {
+        setTestConnectionStatus('success');
+        toast.success(result.message || '✓ Connected to WordPress!');
       } else {
-                
-                        setTestConnectionStatus('error');
-        }  
-    
+        setTestConnectionStatus('error');
+        toast.error(result.message || 'Connection failed');
+      }
     } catch (error: any) {
       setTestConnectionStatus('error');
-            toast.error(error.message || 'Connection failed');
-  }        
+      toast.error(error.message || 'Connection failed - please check your credentials');
+    }
   }, [config]);
 
   const handleSubmit = useCallback((e: React.FormEvent) => {

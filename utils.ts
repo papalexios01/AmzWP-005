@@ -757,6 +757,8 @@ export const fetchRawPostContent = async (
   postId: number,
   postUrl: string
 ): Promise<{ content: string; resolvedId: number }> => {
+  console.log('[fetchRawPostContent] Fetching post:', postId, postUrl);
+
   // Try WordPress API with ID first
   if (config.wpUrl && config.wpUser && config.wpAppPassword) {
     try {
@@ -764,69 +766,120 @@ export const fetchRawPostContent = async (
       const auth = btoa(`${config.wpUser}:${config.wpAppPassword}`);
 
       // Try to find post by ID
+      console.log('[fetchRawPostContent] Trying to fetch post by ID:', postId);
+
       let response = await fetchWithTimeout(
         `${apiBase}/posts/${postId}`,
-        10000,
-        { headers: { 'Authorization': `Basic ${auth}` } }
+        15000,
+        {
+          headers: {
+            'Authorization': `Basic ${auth}`,
+            'Accept': 'application/json'
+          }
+        }
       );
 
       if (response.ok) {
         const post = await response.json();
-        return {
-          content: post.content?.rendered || post.content?.raw || '',
-          resolvedId: post.id,
-        };
+        const content = post.content?.rendered || post.content?.raw || '';
+        console.log('[fetchRawPostContent] Successfully fetched by ID, content length:', content.length);
+
+        if (content.length > 50) {
+          return {
+            content,
+            resolvedId: post.id,
+          };
+        }
       }
 
       // Fallback: search by URL slug
       if (postUrl) {
-        const urlObj = new URL(postUrl);
-        const slug = urlObj.pathname.split('/').filter(s => s).pop();
+        console.log('[fetchRawPostContent] Trying to fetch by URL slug');
 
-        if (slug) {
-          // Try posts
-          response = await fetchWithTimeout(
-            `${apiBase}/posts?slug=${encodeURIComponent(slug)}`,
-            10000,
-            { headers: { 'Authorization': `Basic ${auth}` } }
-          );
+        try {
+          const urlObj = new URL(postUrl);
+          const slug = urlObj.pathname.split('/').filter(s => s).pop();
 
-          if (response.ok) {
-            const posts = await response.json();
-            if (posts.length > 0) {
-              return {
-                content: posts[0].content?.rendered || posts[0].content?.raw || '',
-                resolvedId: posts[0].id,
-              };
+          if (slug) {
+            // Try posts
+            response = await fetchWithTimeout(
+              `${apiBase}/posts?slug=${encodeURIComponent(slug)}`,
+              15000,
+              {
+                headers: {
+                  'Authorization': `Basic ${auth}`,
+                  'Accept': 'application/json'
+                }
+              }
+            );
+
+            if (response.ok) {
+              const posts = await response.json();
+              if (posts.length > 0) {
+                const content = posts[0].content?.rendered || posts[0].content?.raw || '';
+                console.log('[fetchRawPostContent] Found post by slug, content length:', content.length);
+
+                if (content.length > 50) {
+                  return {
+                    content,
+                    resolvedId: posts[0].id,
+                  };
+                }
+              }
+            }
+
+            // Try pages
+            response = await fetchWithTimeout(
+              `${apiBase}/pages?slug=${encodeURIComponent(slug)}`,
+              15000,
+              {
+                headers: {
+                  'Authorization': `Basic ${auth}`,
+                  'Accept': 'application/json'
+                }
+              }
+            );
+
+            if (response.ok) {
+              const pages = await response.json();
+              if (pages.length > 0) {
+                const content = pages[0].content?.rendered || pages[0].content?.raw || '';
+                console.log('[fetchRawPostContent] Found page by slug, content length:', content.length);
+
+                if (content.length > 50) {
+                  return {
+                    content,
+                    resolvedId: pages[0].id,
+                  };
+                }
+              }
             }
           }
-
-          // Try pages
-          response = await fetchWithTimeout(
-            `${apiBase}/pages?slug=${encodeURIComponent(slug)}`,
-            10000,
-            { headers: { 'Authorization': `Basic ${auth}` } }
-          );
-
-          if (response.ok) {
-            const pages = await response.json();
-            if (pages.length > 0) {
-              return {
-                content: pages[0].content?.rendered || pages[0].content?.raw || '',
-                resolvedId: pages[0].id,
-              };
-            }
-          }
+        } catch (slugError) {
+          console.warn('[fetchRawPostContent] Slug parsing failed:', slugError);
         }
       }
-    } catch (error) {
-      console.warn('[fetchRawPostContent] WP API failed, falling back to proxy');
+    } catch (error: any) {
+      console.warn('[fetchRawPostContent] WP API failed:', error.message);
     }
   }
 
-  // Fallback to proxy fetch
-  const { content } = await fetchPageContent(config, postUrl);
-  return { content, resolvedId: postId };
+  // Fallback to proxy fetch if we have a URL
+  if (postUrl) {
+    console.log('[fetchRawPostContent] Falling back to proxy fetch for:', postUrl);
+    try {
+      const { content } = await fetchPageContent(config, postUrl);
+
+      if (content && content.length > 50) {
+        console.log('[fetchRawPostContent] Proxy fetch successful, content length:', content.length);
+        return { content, resolvedId: postId };
+      }
+    } catch (proxyError: any) {
+      console.error('[fetchRawPostContent] Proxy fetch failed:', proxyError);
+    }
+  }
+
+  throw new Error('Failed to fetch post content from all available sources. Please check your WordPress credentials and post URL.');
 };
 
 /**
@@ -879,30 +932,44 @@ export const pushToWordPress = async (
 export const testConnection = async (
   config: AppConfig
 ): Promise<ConnectionTestResult> => {
+  console.log('[testConnection] Testing WordPress connection...');
+
   if (!config.wpUrl) {
     return { success: false, message: 'WordPress URL is required' };
   }
-  
+
   if (!config.wpUser) {
     return { success: false, message: 'Username is required' };
   }
-  
+
   if (!config.wpAppPassword) {
     return { success: false, message: 'App Password is required' };
   }
 
   try {
-    const apiUrl = `${config.wpUrl.replace(/\/$/, '')}/wp-json/wp/v2/users/me`;
+    const baseUrl = config.wpUrl.replace(/\/$/, '');
+    const apiUrl = `${baseUrl}/wp-json/wp/v2/users/me`;
+
+    console.log('[testConnection] Connecting to:', apiUrl);
+
     const auth = btoa(`${config.wpUser}:${config.wpAppPassword}`);
 
     const response = await fetchWithTimeout(
       apiUrl,
       10000,
-      { headers: { 'Authorization': `Basic ${auth}` } }
+      {
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Accept': 'application/json'
+        }
+      }
     );
+
+    console.log('[testConnection] Response status:', response.status);
 
     if (response.ok) {
       const user = await response.json();
+      console.log('[testConnection] Successfully connected as:', user.name || user.slug);
       return {
         success: true,
         message: `Connected as ${user.name || user.slug}`,
@@ -913,33 +980,48 @@ export const testConnection = async (
         },
       };
     } else if (response.status === 401) {
+      console.warn('[testConnection] Authentication failed');
       return {
         success: false,
-        message: 'Authentication failed: Invalid username or app password',
+        message: 'Invalid credentials: Check your username and app password',
       };
     } else if (response.status === 403) {
+      console.warn('[testConnection] Access forbidden');
       return {
         success: false,
-        message: 'Access forbidden: User may not have sufficient permissions',
+        message: 'Access denied: User lacks required permissions',
       };
     } else if (response.status === 404) {
+      console.warn('[testConnection] REST API not found');
       return {
         success: false,
-        message: 'REST API not found: Is WordPress REST API enabled?',
+        message: 'WordPress REST API not found. Check your site URL.',
       };
     } else {
+      const errorText = await response.text().catch(() => 'Unknown error');
+      console.error('[testConnection] Failed with status:', response.status, errorText);
       return {
         success: false,
-        message: `Connection failed with status ${response.status}`,
+        message: `Connection failed (${response.status}): ${errorText.substring(0, 50)}`,
       };
     }
   } catch (error: any) {
+    console.error('[testConnection] Exception:', error);
+
     if (error.name === 'AbortError') {
       return { success: false, message: 'Connection timeout - server not responding' };
     }
+
+    if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+      return {
+        success: false,
+        message: 'Network error: Unable to reach WordPress site. Check the URL.',
+      };
+    }
+
     return {
       success: false,
-      message: error.message || 'Connection failed',
+      message: `Connection error: ${error.message || 'Unknown error'}`,
     };
   }
 };
