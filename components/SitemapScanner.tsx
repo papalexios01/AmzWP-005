@@ -477,9 +477,15 @@ export const SitemapScanner: React.FC<SitemapScannerProps> = ({
                         <h3 className="font-bold text-white group-hover:text-brand-400 transition-colors truncate">
                           {post.title}
                         </h3>
-                        <p className="text-xs text-gray-500 truncate mt-1">
+                        <a
+                          href={post.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-xs text-gray-500 hover:text-brand-400 truncate mt-1 block underline decoration-dotted underline-offset-2"
+                        >
                           {post.url}
-                        </p>
+                        </a>
                       </div>
 
                       {/* Type Badge */}

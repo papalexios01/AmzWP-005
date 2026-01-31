@@ -699,7 +699,56 @@ const decodeHtmlEntities = (text: string): string => {
 };
 
 /**
- * Analyze post content to determine priority and monetization status
+ * PRODUCT CATEGORIES - Physical items that can be purchased on Amazon
+ */
+const PRODUCT_CATEGORIES = [
+  'tracker', 'trackers', 'smartwatch', 'smartwatches', 'fitness watch', 'fitness band',
+  'shoes', 'sneakers', 'footwear', 'headphones', 'earbuds', 'speaker', 'speakers',
+  'monitor', 'monitors', 'scale', 'scales', 'yoga mat', 'exercise mat', 'bottle', 'bottles',
+  'bag', 'bags', 'backpack', 'backpacks', 'equipment', 'gear', 'gadget', 'gadgets',
+  'device', 'devices', 'machine', 'machines', 'bike', 'bikes', 'treadmill', 'treadmills',
+  'dumbbell', 'dumbbells', 'kettlebell', 'kettlebells', 'barbell', 'barbells', 'weights',
+  'bench', 'benches', 'rack', 'racks', 'belt', 'belts', 'gloves', 'strap', 'straps',
+  'roller', 'foam roller', 'resistance band', 'pull-up bar', 'jump rope', 'rope',
+  'supplement', 'supplements', 'protein', 'powder', 'vitamin', 'vitamins', 'creatine',
+  'blender', 'blenders', 'juicer', 'juicers', 'air fryer', 'instant pot',
+  'mattress', 'pillow', 'pillows', 'massager', 'massage gun', 'theragun',
+  'camera', 'cameras', 'laptop', 'laptops', 'tablet', 'tablets',
+  'fitbit', 'garmin', 'apple watch', 'samsung galaxy', 'xiaomi', 'whoop', 'oura ring',
+  'peloton', 'bowflex', 'nordictrack', 'hyperice', 'mirror gym',
+  'heart rate monitor', 'hrm', 'gps watch', 'running watch', 'cycling computer',
+];
+
+/**
+ * BRAND NAMES - Specific product brands
+ */
+const BRAND_NAMES = [
+  'fitbit', 'garmin', 'apple', 'samsung', 'xiaomi', 'whoop', 'oura', 'polar', 'suunto',
+  'nike', 'adidas', 'under armour', 'reebok', 'asics', 'brooks', 'new balance', 'hoka',
+  'peloton', 'bowflex', 'nordictrack', 'theragun', 'hyperice', 'rogue', 'titan',
+  'vitamix', 'ninja', 'nutribullet', 'instant pot', 'cuisinart',
+  'amazon', 'bose', 'sony', 'jabra', 'beats', 'anker', 'jbl',
+];
+
+/**
+ * NON-PRODUCT TERMS - Indicate informational/lifestyle content, NOT product reviews
+ */
+const NON_PRODUCT_TERMS = [
+  'time', 'times', 'day', 'days', 'week', 'weeks', 'month', 'months', 'year', 'years',
+  'way', 'ways', 'method', 'methods', 'technique', 'techniques', 'step', 'steps',
+  'tip', 'tips', 'trick', 'tricks', 'habit', 'habits', 'routine', 'routines',
+  'benefit', 'benefits', 'reason', 'reasons', 'mistake', 'mistakes', 'myth', 'myths',
+  'exercise', 'exercises', 'workout', 'workouts', 'stretch', 'stretches', 'movement',
+  'food', 'foods', 'meal', 'meals', 'diet', 'diets', 'recipe', 'recipes', 'nutrition',
+  'sleep', 'rest', 'recovery', 'hydration', 'water', 'breathing', 'meditation',
+  'running', 'walking', 'swimming', 'cycling', 'hiking', 'yoga', 'pilates', 'cardio',
+  'weight loss', 'fat loss', 'muscle', 'strength', 'endurance', 'flexibility', 'mobility',
+  'body', 'mind', 'health', 'healthy', 'fitness', 'wellness', 'lifestyle',
+  'morning', 'evening', 'night', 'daily', 'weekly', 'age', 'beginner', 'advanced',
+];
+
+/**
+ * Analyze post content to determine priority and monetization status - ENTERPRISE GRADE
  */
 const analyzePostForPriority = (title: string, content: string): {
   priority: 'critical' | 'high' | 'medium' | 'low';
@@ -708,85 +757,120 @@ const analyzePostForPriority = (title: string, content: string): {
   const titleLower = title.toLowerCase();
   const contentLower = content.toLowerCase();
 
-  // Check for existing affiliate links (already monetized)
+  // Step 1: Check for existing affiliate links (already monetized)
   const affiliatePatterns = [
     /amazon\.com\/.*?tag=/i,
     /amzn\.to\//i,
-    /affiliate/i,
-    /product-box/i,
+    /href="[^"]*amazon[^"]*tag=/i,
+    /data-asin="[A-Z0-9]{10}"/i,
     /aawp-product/i,
-    /wp-block-flavor-flavor-amz-product/i,
-    /data-asin=/i,
+    /wp-block-flavor/i,
+    /class="[^"]*product-?box/i,
+    /affiliate[-_]?link/i,
     /associate-?id/i,
-    /ref=.*?tag=/i,
   ];
 
   const isMonetized = affiliatePatterns.some(pattern => pattern.test(content));
-
   if (isMonetized) {
     return { priority: 'low', status: 'monetized' };
   }
 
-  // CRITICAL: Review articles, product comparisons, "best" lists
-  const criticalPatterns = [
-    /\breview\b/i,
-    /\bbest\s+\d*\s*(picks?|choice|options?|products?)?/i,
-    /\btop\s+\d+/i,
-    /\bvs\.?\b/i,
-    /\bversus\b/i,
-    /\bcomparison\b/i,
-    /\bcompare\b/i,
-    /\bbuying\s+guide/i,
-    /\bbuyer'?s?\s+guide/i,
-    /\bworth\s+(it|buying|the\s+money)/i,
-    /\bshould\s+(you|i)\s+buy/i,
-  ];
+  // Step 2: Check if title contains SPECIFIC product categories or brand names
+  const hasProductInTitle = PRODUCT_CATEGORIES.some(cat => {
+    const words = cat.split(' ');
+    if (words.length > 1) {
+      return titleLower.includes(cat);
+    }
+    return new RegExp(`\\b${cat}s?\\b`, 'i').test(titleLower);
+  });
 
-  if (criticalPatterns.some(p => p.test(titleLower))) {
+  const hasBrandInTitle = BRAND_NAMES.some(brand =>
+    new RegExp(`\\b${brand}\\b`, 'i').test(titleLower)
+  );
+
+  // Step 3: Check for "best/top X [PRODUCTS]" pattern
+  const bestTopMatch = titleLower.match(/(?:best|top)\s+(\d+\s+)?(.+?)(?:\s+for\s|\s+in\s|\s+of\s|\s+to\s|\s*[-:|]|\s*$)/i);
+  let isBestProductList = false;
+
+  if (bestTopMatch) {
+    const subject = bestTopMatch[2]?.trim() || '';
+    // Only CRITICAL if subject is a product category
+    isBestProductList = PRODUCT_CATEGORIES.some(cat => subject.includes(cat)) ||
+                       BRAND_NAMES.some(brand => subject.includes(brand));
+    // Downgrade if it's about non-product things
+    if (NON_PRODUCT_TERMS.some(term => subject.startsWith(term) || subject === term)) {
+      isBestProductList = false;
+    }
+  }
+
+  // Step 4: Check for "[PRODUCT/BRAND] review" pattern
+  const isProductReview = /\breview\b/i.test(titleLower) && (hasProductInTitle || hasBrandInTitle);
+
+  // Step 5: Check for product vs product comparisons (Fitbit vs Apple Watch)
+  const vsMatch = titleLower.match(/(.+?)\s+(?:vs\.?|versus|or)\s+(.+?)(?:\s*[-:|]|\s*$)/i);
+  let isProductComparison = false;
+
+  if (vsMatch) {
+    const part1 = vsMatch[1]?.trim() || '';
+    const part2 = vsMatch[2]?.trim() || '';
+
+    const part1IsProduct = PRODUCT_CATEGORIES.some(cat => part1.includes(cat)) ||
+                          BRAND_NAMES.some(brand => part1.includes(brand));
+    const part2IsProduct = PRODUCT_CATEGORIES.some(cat => part2.includes(cat)) ||
+                          BRAND_NAMES.some(brand => part2.includes(brand));
+
+    // Both sides must be products OR at least one side with product + other not being activity
+    const part1IsActivity = NON_PRODUCT_TERMS.some(term => part1 === term || part1.startsWith(term + ' '));
+    const part2IsActivity = NON_PRODUCT_TERMS.some(term => part2 === term || part2.startsWith(term + ' '));
+
+    isProductComparison = (part1IsProduct || part2IsProduct) && !(part1IsActivity && part2IsActivity);
+
+    // "Walking vs Running" = NOT product comparison
+    if (part1IsActivity && part2IsActivity && !part1IsProduct && !part2IsProduct) {
+      isProductComparison = false;
+    }
+  }
+
+  // CRITICAL: Product lists, specific product reviews, or product comparisons
+  if (isBestProductList || isProductReview || isProductComparison) {
     return { priority: 'critical', status: 'opportunity' };
   }
 
-  // HIGH: Product-related content, how-tos with products
-  const highPatterns = [
-    /\bproduct/i,
-    /\bgear\b/i,
-    /\bequipment\b/i,
-    /\btools?\b/i,
-    /\bgadget/i,
-    /\bdevice/i,
-    /\baccessor/i,
-    /\bwatch\b/i,
-    /\btracker\b/i,
-    /\bmonitor\b/i,
-    /\brecommend/i,
-    /\balternative/i,
-    /\baffordable\b/i,
-    /\bbudget\b/i,
-    /\bpremium\b/i,
-    /\bcheap\b/i,
-    /\bprice\b/i,
-    /\bcost\b/i,
-    /\bbrand\b/i,
-  ];
+  // Also CRITICAL: Buying guides for products
+  if (/buying\s+guide|buyer'?s?\s+guide/i.test(titleLower) && (hasProductInTitle || hasBrandInTitle)) {
+    return { priority: 'critical', status: 'opportunity' };
+  }
 
-  if (highPatterns.some(p => p.test(titleLower) || p.test(contentLower.substring(0, 2000)))) {
+  // HIGH: Title mentions product categories or brands (but not in review/list format)
+  if (hasProductInTitle || hasBrandInTitle) {
     return { priority: 'high', status: 'opportunity' };
   }
 
-  // MEDIUM: General content that might have monetization potential
-  const mediumPatterns = [
-    /\bhow\s+to\b/i,
-    /\btips?\b/i,
-    /\bguide\b/i,
-    /\btutorial\b/i,
-    /\bideas?\b/i,
-    /\bways?\s+to\b/i,
-  ];
+  // HIGH: Content has multiple product mentions
+  const productMentionsInContent = PRODUCT_CATEGORIES.filter(cat => {
+    const regex = new RegExp(`\\b${cat}\\b`, 'gi');
+    return (contentLower.match(regex) || []).length >= 2;
+  }).length;
 
-  if (mediumPatterns.some(p => p.test(titleLower))) {
-    return { priority: 'medium', status: 'opportunity' };
+  if (productMentionsInContent >= 3) {
+    return { priority: 'high', status: 'opportunity' };
   }
 
+  // MEDIUM: General how-to/guide content that MIGHT have product opportunities
+  const couldHaveProducts = /\bhow\s+to\b|\bguide\b|\bessential|\bmust[\s-]?have/i.test(titleLower);
+
+  if (couldHaveProducts) {
+    // Check if content actually mentions products
+    const hasProductsInBody = PRODUCT_CATEGORIES.some(cat =>
+      new RegExp(`\\b${cat}\\b`, 'i').test(contentLower.substring(0, 3000))
+    );
+
+    if (hasProductsInBody) {
+      return { priority: 'medium', status: 'opportunity' };
+    }
+  }
+
+  // LOW: Pure informational content with no product connection
   return { priority: 'low', status: 'opportunity' };
 };
 
@@ -1751,8 +1835,11 @@ const generateDefaultFaqs = (productTitle: string): FAQItem[] => {
 };
 
 // ============================================================================
-// SERPAPI AMAZON SEARCH
+// SERPAPI AMAZON SEARCH - VIA EDGE FUNCTION (CORS BYPASS)
 // ============================================================================
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 /**
  * Decrypt API key if it's base64 encoded
@@ -1760,10 +1847,8 @@ const generateDefaultFaqs = (productTitle: string): FAQItem[] => {
 const decryptApiKey = (key: string): string => {
   if (!key) return '';
   try {
-    // Check if it looks like base64 encoded
     if (/^[A-Za-z0-9+/=]+$/.test(key) && key.length > 20) {
       const decoded = SecureStorage.decryptSync(key);
-      // Verify it looks like a valid SerpAPI key (alphanumeric with possible hyphens)
       if (/^[a-f0-9]{64}$/i.test(decoded) || decoded.length >= 32) {
         return decoded;
       }
@@ -1775,13 +1860,42 @@ const decryptApiKey = (key: string): string => {
 };
 
 /**
- * Search Amazon via SerpAPI - Enterprise Grade
+ * Call SerpAPI via Edge Function (bypasses CORS)
+ */
+const callSerpApiProxy = async (params: {
+  type: 'search' | 'product';
+  query?: string;
+  asin?: string;
+  apiKey: string;
+}): Promise<any> => {
+  const edgeFunctionUrl = `${SUPABASE_URL}/functions/v1/serpapi-proxy`;
+
+  console.log('[SerpAPI Proxy] Calling edge function for', params.type);
+
+  const response = await fetchWithTimeout(edgeFunctionUrl, 30000, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+    },
+    body: JSON.stringify(params),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Edge function error: ${response.status}`);
+  }
+
+  return response.json();
+};
+
+/**
+ * Search Amazon via SerpAPI Edge Function - Enterprise Grade
  */
 export const searchAmazonProduct = async (
   query: string,
   apiKey: string
 ): Promise<Partial<ProductDetails>> => {
-  // Decrypt the API key if needed
   const decryptedKey = decryptApiKey(apiKey);
 
   if (!decryptedKey) {
@@ -1799,24 +1913,14 @@ export const searchAmazonProduct = async (
   console.log('[SerpAPI] Searching for:', query.substring(0, 50));
 
   try {
-    // Use correct SerpAPI parameter name
-    const url = `https://serpapi.com/search.json?engine=amazon&amazon_domain=amazon.com&k=${encodeURIComponent(query)}&api_key=${encodeURIComponent(decryptedKey)}`;
-
-    console.log('[SerpAPI] Making API request...');
-
-    const response = await fetchWithTimeout(url, 20000);
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      console.error('[SerpAPI] API error:', response.status, errorText.substring(0, 100));
-      throw new Error(`SerpAPI error: ${response.status}`);
-    }
-
-    const data = await response.json();
+    const data = await callSerpApiProxy({
+      type: 'search',
+      query,
+      apiKey: decryptedKey,
+    });
 
     console.log('[SerpAPI] Response received, results:', data.organic_results?.length || 0);
 
-    // Try to find best result from organic_results or shopping_results
     const result = data.organic_results?.[0] || data.shopping_results?.[0];
 
     if (!result) {
@@ -1826,7 +1930,6 @@ export const searchAmazonProduct = async (
 
     console.log('[SerpAPI] Found product:', result.title?.substring(0, 50));
 
-    // Extract price properly - handle various formats
     let price = '$XX.XX';
     if (result.price?.raw) {
       price = result.price.raw;
@@ -1861,13 +1964,12 @@ export const searchAmazonProduct = async (
 };
 
 /**
- * Fetch product details by ASIN - Enterprise Grade
+ * Fetch product details by ASIN via Edge Function - Enterprise Grade
  */
 export const fetchProductByASIN = async (
   asin: string,
   apiKey: string
 ): Promise<ProductDetails | null> => {
-  // Decrypt the API key if needed
   const decryptedKey = decryptApiKey(apiKey);
 
   if (!decryptedKey || !asin) {
@@ -1875,7 +1977,6 @@ export const fetchProductByASIN = async (
     return null;
   }
 
-  // Validate ASIN format
   if (!/^[A-Z0-9]{10}$/i.test(asin)) {
     console.warn('[fetchProductByASIN] Invalid ASIN format:', asin);
     return null;
@@ -1890,17 +1991,12 @@ export const fetchProductByASIN = async (
   console.log('[SerpAPI] Fetching product by ASIN:', asin);
 
   try {
-    const url = `https://serpapi.com/search.json?engine=amazon_product&product_id=${asin}&amazon_domain=amazon.com&api_key=${encodeURIComponent(decryptedKey)}`;
+    const data = await callSerpApiProxy({
+      type: 'product',
+      asin,
+      apiKey: decryptedKey,
+    });
 
-    const response = await fetchWithTimeout(url, 20000);
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      console.error('[fetchProductByASIN] API error:', response.status, errorText.substring(0, 100));
-      return null;
-    }
-
-    const data = await response.json();
     const result = data.product_results;
 
     if (!result) {
@@ -1910,7 +2006,6 @@ export const fetchProductByASIN = async (
 
     console.log('[SerpAPI] Found product:', result.title?.substring(0, 50));
 
-    // Extract price properly
     let price = '$XX.XX';
     if (result.price?.raw) {
       price = result.price.raw;
@@ -1922,7 +2017,6 @@ export const fetchProductByASIN = async (
       price = `$${result.buybox_winner.price.value}`;
     }
 
-    // Get image
     const imageUrl = result.main_image || result.images?.[0]?.link || result.images?.[0] || '';
 
     const product: ProductDetails = {
