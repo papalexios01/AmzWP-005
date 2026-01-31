@@ -8,7 +8,7 @@ import { ComparisonTablePreview } from './ComparisonTablePreview';
 import { useHistory } from '../hooks/useHistory';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { useReducedMotion } from '../hooks/useReducedMotion';
-import Toastify from 'toastify-js';
+
 
 // ============================================================================
 // AUTO-SAVE CONFIGURATION
