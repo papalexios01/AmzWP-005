@@ -61,9 +61,20 @@ Deno.serve(async (req: Request) => {
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`[SerpAPI Proxy] API error: ${response.status}`, errorText);
+
+      let errorMessage = `SerpAPI returned ${response.status}`;
+      if (response.status === 401) {
+        errorMessage = 'Invalid SerpAPI key';
+      } else if (response.status === 429) {
+        errorMessage = 'SerpAPI rate limit exceeded';
+      } else if (response.status === 400) {
+        errorMessage = 'Invalid request to SerpAPI';
+      }
+
       return new Response(
         JSON.stringify({
-          error: `SerpAPI error: ${response.status}`,
+          error: errorMessage,
+          status: response.status,
           details: errorText.substring(0, 200)
         }),
         {

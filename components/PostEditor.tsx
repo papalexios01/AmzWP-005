@@ -570,12 +570,16 @@ export const PostEditor: React.FC<PostEditorProps> = ({ post, config, onBack }) 
             }
         } catch (e: any) {
             const errorMsg = e?.message || 'Unknown error';
+            console.error('[ManualAdd] Full error:', e);
+            console.error('[ManualAdd] Error message:', errorMsg);
             if (errorMsg.includes('timeout') || errorMsg.includes('Timeout')) {
                 toast("Request timed out. Try again.");
-            } else if (errorMsg.includes('API') || errorMsg.includes('api')) {
-                toast("API error. Check your SerpAPI key.");
+            } else if (errorMsg.includes('401') || errorMsg.includes('Invalid API')) {
+                toast("Invalid SerpAPI key. Check your key in Settings.");
+            } else if (errorMsg.includes('429')) {
+                toast("SerpAPI rate limit exceeded. Wait and try again.");
             } else {
-                toast(`Error: ${errorMsg.substring(0, 50)}`);
+                toast(`Error: ${errorMsg.substring(0, 80)}`);
             }
         } finally {
             setAddingProduct(false);
