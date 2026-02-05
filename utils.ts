@@ -1842,9 +1842,83 @@ export const analyzeContentAndFindProduct = async (
   const cleanContent = stripHtml(truncatedContent);
   const contentLower = cleanContent.toLowerCase();
 
-  console.log('[Analysis] Phase 1: Pattern-based product extraction');
+  console.log('=== PHASE 1: Pattern Detection ===');
   const phase1Products = extractProductsPhase1(truncatedContent, cleanContent);
-  console.log('[Analysis] Phase 1 found:', phase1Products.length, 'potential products');
+  console.log('[Phase 1] Found:', phase1Products.length, 'potential products');
+  phase1Products.forEach((p: any, i: number) => {
+    console.log(`  ${i + 1}. ${p.name} (${p.sourceType}, conf: ${p.confidence}${p.asin ? ', ASIN: ' + p.asin : ''})`);
+  });
+
+  // AGGRESSIVE: If we have Phase 1 products and SerpAPI, use them directly
+  if (phase1Products.length > 0 && config.serpApiKey) {
+    console.log('[Phase 1] ⚡ Using Phase 1 products directly with SerpAPI enrichment');
+    const quickProducts: ProductDetails[] = [];
+
+    for (let i = 0; i < Math.min(phase1Products.length, 10); i++) {
+      const p1 = phase1Products[i];
+      console.log(`[Phase 1 Enrich ${i + 1}/${Math.min(phase1Products.length, 10)}] ${p1.name}`);
+
+      try {
+        let productData: Partial<ProductDetails> = {};
+
+        if (p1.asin) {
+          console.log(`  → ASIN lookup: ${p1.asin}`);
+          const result = await fetchProductByASIN(p1.asin, config.serpApiKey);
+          if (result) productData = result;
+        }
+
+        if (!productData.asin) {
+          console.log(`  → Search: "${p1.name}"`);
+          productData = await searchAmazonProduct(p1.name, config.serpApiKey);
+        }
+
+        console.log(`  → Result: ASIN=${!!productData.asin}, Image=${!!productData.imageUrl}, Price=${productData.price}`);
+
+        if (productData.asin && productData.imageUrl && productData.price && productData.price !== '$XX.XX') {
+          console.log(`  ✓ VALID PRODUCT`);
+          quickProducts.push({
+            id: `prod-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            title: productData.title || p1.name,
+            asin: productData.asin,
+            price: productData.price,
+            imageUrl: productData.imageUrl,
+            rating: productData.rating || 4.5,
+            reviewCount: productData.reviewCount || 0,
+            verdict: generateDefaultVerdict(productData.title || p1.name),
+            evidenceClaims: generateDefaultClaims(),
+            brand: productData.brand || '',
+            category: 'General',
+            prime: productData.prime ?? true,
+            insertionIndex: 0,
+            deploymentMode: 'ELITE_BENTO',
+            faqs: generateDefaultFaqs(productData.title || p1.name),
+            specs: {},
+            confidence: p1.confidence,
+          });
+        } else {
+          console.log(`  ✗ Incomplete data`);
+        }
+
+        if (i < Math.min(phase1Products.length, 10) - 1) {
+          await sleep(150);
+        }
+      } catch (err: any) {
+        console.error(`  ✗ Error: ${err.message}`);
+      }
+    }
+
+    if (quickProducts.length > 0) {
+      console.log(`[Phase 1] ✓✓✓ SUCCESS! ${quickProducts.length} products found`);
+      IntelligenceCache.setAnalysis(contentHash, { products: quickProducts });
+      return {
+        detectedProducts: quickProducts,
+        contentType: 'informational',
+        monetizationPotential: quickProducts.length >= 3 ? 'high' : 'medium',
+      };
+    } else {
+      console.log(`[Phase 1] ✗ No valid products after enrichment`);
+    }
+  }
 
   const preDetectedList = phase1Products.length > 0
     ? phase1Products.map((p, i) => `${i + 1}. "${p.name}" (${p.sourceType}, confidence: ${p.confidence})`).join('\n')
@@ -1878,8 +1952,8 @@ export const analyzeContentAndFindProduct = async (
     const validatedProducts = new Map<string, any>();
 
     for (const p of (parsed.products || [])) {
-      if (p.confidence < 55) {
-        console.log('[Analysis] Skipping low confidence:', p.title, p.confidence);
+      if (p.confidence < 30) {
+        console.log('[Analysis] Skipping very low confidence:', p.title, p.confidence);
         continue;
       }
 
@@ -1908,7 +1982,7 @@ export const analyzeContentAndFindProduct = async (
 
     for (const p1 of phase1Products) {
       const key = normalizeProductName(p1.name);
-      if (!validatedProducts.has(key) && p1.confidence >= 70) {
+      if (!validatedProducts.has(key) && p1.confidence >= 50) {
         validatedProducts.set(key, {
           id: `phase1-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
           searchQuery: p1.name,
