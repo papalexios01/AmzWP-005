@@ -171,7 +171,7 @@ export   const SecureStorage = new SecureStorageClass();
 // HELPER FUNCTIONS
 // ============================================================================
 
-const hashString = (str: string): string => {
+export const hashString = (str: string): string => {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
@@ -1660,78 +1660,88 @@ const callOpenRouter = async (
 // CONTENT ANALYSIS & PRODUCT DETECTION
 // ============================================================================
 
-const ANALYSIS_SYSTEM_PROMPT = `You are a PRECISION product extraction system. Your ONLY task is to identify EXPLICITLY NAMED products in content.
+const ANALYSIS_SYSTEM_PROMPT = `You are an expert product identification system for affiliate marketing. Your task is to accurately identify ALL purchasable products mentioned in content.
 
-CRITICAL RULES:
-1. ONLY extract products that are EXPLICITLY NAMED in the text (brand name + model/product name)
-2. DO NOT guess, infer, or suggest products that are not explicitly mentioned
-3. Each product MUST have an exact quote from the content proving it exists
-4. Generic terms like "fitness tracker" or "protein powder" are NOT products - you need specific names like "Fitbit Charge 5" or "Optimum Nutrition Gold Standard"
-5. If no specific products are named, return an empty products array
+IDENTIFICATION GUIDELINES:
+1. Extract products that have identifiable brand names, model names, or specific product identifiers
+2. Include products even if only the brand OR model is mentioned (e.g., "AirPods" alone is valid)
+3. Include products mentioned in lists, headings, comparisons, or inline text
+4. Include product variations (Pro, Max, Plus, Gen 2, etc.)
+5. If a product name could reasonably be searched on Amazon, include it
+6. DO NOT invent products - only extract what is actually written in the content
+7. Be thorough - better to include borderline cases than miss valid products
 
-You must return ONLY valid JSON with no additional text.`;
+PRODUCT DETECTION PATTERNS:
+- Brand + Model: "Sony WH-1000XM5", "Ninja BL610"
+- Brand + Product Line: "AirPods Pro", "Galaxy Buds"
+- Standalone Recognized Products: "Kindle", "Echo Dot", "Instant Pot"
+- Products with identifiers: "Model 3", "Series 9", "Gen 5"
 
-const ANALYSIS_USER_PROMPT = `Extract ONLY the EXPLICITLY NAMED products from this content.
+Return ONLY valid JSON with no additional text.`;
+
+const ANALYSIS_USER_PROMPT = `Analyze this content and extract ALL identifiable products that could be found on Amazon.
 
 TITLE: {{TITLE}}
 
 CONTENT:
 {{CONTENT}}
 
-EXTRACTION RULES:
-1. A product is ONLY valid if it has a SPECIFIC BRAND NAME and/or MODEL NAME mentioned in the text
-2. You MUST provide the EXACT QUOTE from the content where the product is mentioned
-3. Generic categories (e.g., "running shoes", "blender") are NOT products unless a specific brand/model is named
-4. The exactQuote MUST be a real sentence/phrase copied directly from the content
-5. paragraphNumber is the paragraph index (0-based) where the product first appears
+PRE-DETECTED PRODUCTS (verify these exist in content):
+{{PRE_DETECTED}}
 
-EXAMPLES OF VALID PRODUCTS:
-- "Apple AirPods Pro 2" - specific brand and model
-- "Ninja Professional Blender BL610" - brand and model number
-- "Fitbit Charge 5" - brand and specific product line
-- "Sony WH-1000XM5" - brand and model
+EXTRACTION INSTRUCTIONS:
+1. Verify each pre-detected product actually appears in the content
+2. Find any additional products missed by pattern matching
+3. For each product, provide the search query that would find it on Amazon
+4. Include a short quote (10-50 chars) showing where the product appears
+5. Rate confidence 60-100 based on how clearly the product is named
 
-EXAMPLES OF INVALID (DO NOT EXTRACT):
-- "wireless earbuds" - no brand specified
-- "a good blender" - no specific product
-- "fitness tracker" - generic category
-- "running shoes" - no brand/model
+WHAT TO EXTRACT:
+- Products with brand names: Apple, Samsung, Sony, Nike, Dyson, Ninja, etc.
+- Products with model identifiers: XM5, BL610, Series 9, Gen 3
+- Well-known product lines: AirPods, Galaxy Buds, Kindle, Echo
+- Products in listicles or comparison sections
+- Products mentioned as recommendations or reviews
 
-REQUIRED JSON FORMAT:
+WHAT NOT TO EXTRACT:
+- Generic categories without brands: "wireless earbuds", "blender", "laptop"
+- Descriptive phrases: "the best headphones", "a quality speaker"
+- Services or subscriptions (unless physical products)
+
+JSON FORMAT:
 {
   "products": [
     {
-      "id": "unique-id",
-      "searchQuery": "exact brand + model for Amazon search",
-      "title": "Full Product Name as mentioned",
-      "exactQuote": "The exact sentence from content where this product is mentioned",
-      "paragraphNumber": 3,
-      "confidence": 95,
-      "category": "Electronics|Kitchen|Fitness|etc"
+      "id": "prod-1",
+      "searchQuery": "optimized Amazon search query",
+      "title": "Product name as mentioned",
+      "exactQuote": "short quote showing mention",
+      "paragraphNumber": 0,
+      "confidence": 85,
+      "category": "Electronics"
     }
   ],
   "comparison": {
-    "shouldCreate": false,
-    "productIds": []
+    "shouldCreate": true,
+    "productIds": ["prod-1", "prod-2"],
+    "title": "Comparison title if applicable"
   },
-  "contentType": "review|listicle|how-to|informational|comparison",
-  "totalProductsMentioned": 2
+  "contentType": "review|listicle|comparison|how-to|informational",
+  "totalProductsMentioned": 1
 }
 
-IMPORTANT: If no specific products with brand names are mentioned, return: {"products": [], "comparison": {"shouldCreate": false}, "contentType": "informational", "totalProductsMentioned": 0}`;
+Return empty products array ONLY if there are truly no identifiable products in the content.`;
 
 /**
- * Analyze content and find monetizable products
+ * Analyze content and find monetizable products - SOTA Multi-Phase Detection
  */
 export const analyzeContentAndFindProduct = async (
   title: string,
   content: string,
   config: AppConfig
 ): Promise<AnalysisResult> => {
-  // Generate content hash for caching
-  const contentHash = hashString(`${title}_${content.substring(0, 500)}_${content.length}`);
+  const contentHash = hashString(`${title}_${content.substring(0, 500)}_${content.length}_v2`);
 
-  // Check cache
   const cached = IntelligenceCache.getAnalysis(contentHash);
   if (cached) {
     console.log('[Analysis] Returning cached analysis');
@@ -1743,156 +1753,376 @@ export const analyzeContentAndFindProduct = async (
     };
   }
 
-  // Prepare content (truncate if too long)
-  const maxContentLength = 15000;
+  const maxContentLength = 20000;
   const truncatedContent = content.length > maxContentLength
-    ? content.substring(0, maxContentLength) + '\n\n[Content truncated for analysis...]'
+    ? content.substring(0, maxContentLength)
     : content;
 
-  // Clean HTML from content for better analysis
   const cleanContent = stripHtml(truncatedContent);
+  const contentLower = cleanContent.toLowerCase();
+
+  console.log('[Analysis] Phase 1: Pattern-based product extraction');
+  const phase1Products = extractProductsPhase1(truncatedContent, cleanContent);
+  console.log('[Analysis] Phase 1 found:', phase1Products.length, 'potential products');
+
+  const preDetectedList = phase1Products.length > 0
+    ? phase1Products.map((p, i) => `${i + 1}. "${p.name}" (${p.sourceType}, confidence: ${p.confidence})`).join('\n')
+    : 'None pre-detected - scan content thoroughly';
 
   const prompt = ANALYSIS_USER_PROMPT
     .replace('{{TITLE}}', title)
-    .replace('{{CONTENT}}', cleanContent);
+    .replace('{{CONTENT}}', cleanContent.substring(0, 12000))
+    .replace('{{PRE_DETECTED}}', preDetectedList);
 
   try {
+    console.log('[Analysis] Phase 2: AI-powered product verification and discovery');
     const response = await callAIProvider(
       config,
       ANALYSIS_SYSTEM_PROMPT,
       prompt,
-      { temperature: 0.7, jsonMode: true }
+      { temperature: 0.3, jsonMode: true }
     );
 
-    // Parse response
     let parsed: any;
     try {
-      // Try to extract JSON from response
       const jsonMatch = response.text.match(/\{[\s\S]*\}/);
       parsed = JSON.parse(jsonMatch ? jsonMatch[0] : response.text);
     } catch (parseError) {
-      console.warn('[Analysis] Failed to parse AI response as JSON:', parseError);
-      return {
-        detectedProducts: [],
-        contentType: 'unknown',
-        monetizationPotential: 'low',
-      };
+      console.warn('[Analysis] Failed to parse AI response, using Phase 1 results');
+      parsed = { products: [], contentType: 'informational' };
     }
 
-    // Process detected products with STRICT VALIDATION
-    const products: ProductDetails[] = [];
-    const contentLower = cleanContent.toLowerCase();
+    console.log('[Analysis] AI found:', parsed.products?.length || 0, 'products');
 
-    console.log('[Analysis] Processing', parsed.products?.length || 0, 'detected products');
-    console.log('[Analysis] SerpAPI key configured:', !!config.serpApiKey);
+    const validatedProducts = new Map<string, any>();
 
     for (const p of (parsed.products || [])) {
-      // STRICT: Skip low confidence matches (raised to 80%)
-      if (p.confidence < 80) {
-        console.log('[Analysis] Skipping low confidence product:', p.title, p.confidence);
+      if (p.confidence < 55) {
+        console.log('[Analysis] Skipping low confidence:', p.title, p.confidence);
         continue;
       }
 
-      // STRICT: Validate that the exact quote exists in the content
-      const exactQuote = p.exactQuote || '';
-      const quoteLower = exactQuote.toLowerCase().trim();
+      const searchTerms = (p.searchQuery || p.title || '').toLowerCase();
+      const searchWords = searchTerms.split(/\s+/).filter((w: string) => w.length > 2);
 
-      if (!quoteLower || quoteLower.length < 10) {
-        console.log('[Analysis] Skipping product with missing/short quote:', p.title);
-        continue;
-      }
-
-      // Check if the quote actually exists in content (fuzzy match for minor variations)
-      const quoteWords = quoteLower.split(/\s+/).filter((w: string) => w.length > 3);
-      const matchingWords = quoteWords.filter((word: string) => contentLower.includes(word));
-      const matchRatio = quoteWords.length > 0 ? matchingWords.length / quoteWords.length : 0;
-
-      if (matchRatio < 0.7) {
-        console.log('[Analysis] Skipping product - quote not found in content:', p.title, 'Match ratio:', matchRatio);
-        continue;
-      }
-
-      // STRICT: Verify the product title/brand appears in content
-      const productTitleLower = (p.title || p.searchQuery || '').toLowerCase();
-      const titleWords = productTitleLower.split(/\s+/).filter((w: string) => w.length > 2);
-      const titleMatchCount = titleWords.filter((word: string) => contentLower.includes(word)).length;
-
-      if (titleMatchCount < 2) {
-        console.log('[Analysis] Skipping product - title not found in content:', p.title);
-        continue;
-      }
-
-      // Try to fetch real product data from SerpAPI
-      let productData: Partial<ProductDetails> = {};
-
-      if (config.serpApiKey) {
-        console.log('[Analysis] Fetching SerpAPI data for:', p.searchQuery);
-        try {
-          productData = await searchAmazonProduct(p.searchQuery, config.serpApiKey);
-          console.log('[Analysis] SerpAPI result:', {
-            asin: productData.asin,
-            price: productData.price,
-            title: productData.title?.substring(0, 50)
-          });
-        } catch (error: any) {
-          console.error('[Analysis] SerpAPI lookup failed for:', p.searchQuery, error.message);
-        }
-      } else {
-        console.warn('[Analysis] No SerpAPI key configured - using placeholder data');
-      }
-
-      // Use paragraph number for precise placement
-      const insertionIndex = typeof p.paragraphNumber === 'number' ? p.paragraphNumber : 0;
-
-      products.push({
-        id: p.id || `prod-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        title: productData.title || p.title || p.searchQuery,
-        asin: productData.asin || '',
-        price: productData.price || '$XX.XX',
-        imageUrl: productData.imageUrl || 'https://via.placeholder.com/300x300?text=Product',
-        rating: productData.rating || 4.5,
-        reviewCount: productData.reviewCount || 1000,
-        verdict: productData.verdict || generateDefaultVerdict(p.title || p.searchQuery),
-        evidenceClaims: productData.evidenceClaims || generateDefaultClaims(),
-        brand: productData.brand || '',
-        category: p.category || 'General',
-        prime: productData.prime ?? true,
-        insertionIndex,
-        deploymentMode: 'ELITE_BENTO',
-        faqs: productData.faqs || generateDefaultFaqs(p.title || p.searchQuery),
-        specs: productData.specs || {},
-        confidence: p.confidence,
-        exactMention: exactQuote,
-        paragraphIndex: p.paragraphNumber,
+      const foundInContent = searchWords.some((word: string) => {
+        if (word.length < 3) return false;
+        return contentLower.includes(word);
       });
+
+      if (!foundInContent && searchWords.length > 0) {
+        const hasAnyMatch = searchWords.filter((w: string) => w.length > 3)
+          .some((word: string) => contentLower.includes(word));
+        if (!hasAnyMatch) {
+          console.log('[Analysis] Product not found in content:', p.title);
+          continue;
+        }
+      }
+
+      const key = normalizeProductName(p.searchQuery || p.title);
+      if (!validatedProducts.has(key)) {
+        validatedProducts.set(key, p);
+      }
     }
 
-    // Build comparison data
+    for (const p1 of phase1Products) {
+      const key = normalizeProductName(p1.name);
+      if (!validatedProducts.has(key) && p1.confidence >= 70) {
+        validatedProducts.set(key, {
+          id: `phase1-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+          searchQuery: p1.name,
+          title: p1.name,
+          asin: p1.asin,
+          confidence: p1.confidence,
+          category: 'General',
+          paragraphNumber: 0,
+        });
+      }
+    }
+
+    console.log('[Analysis] Phase 3: SerpAPI enrichment for', validatedProducts.size, 'products');
+
+    const products: ProductDetails[] = [];
+    const serpApiQueue: Array<{ key: string; product: any; asin?: string }> = [];
+
+    for (const [key, p] of validatedProducts) {
+      const phase1Match = phase1Products.find(p1 => normalizeProductName(p1.name) === key);
+      if (phase1Match?.asin) {
+        serpApiQueue.push({ key, product: p, asin: phase1Match.asin });
+      } else {
+        serpApiQueue.push({ key, product: p });
+      }
+    }
+
+    const batchSize = 3;
+    for (let i = 0; i < serpApiQueue.length; i += batchSize) {
+      const batch = serpApiQueue.slice(i, i + batchSize);
+
+      const batchPromises = batch.map(async ({ key, product, asin }) => {
+        let productData: Partial<ProductDetails> = {};
+
+        if (config.serpApiKey) {
+          try {
+            if (asin) {
+              console.log('[Analysis] Fetching by ASIN:', asin);
+              const asinResult = await fetchProductByASIN(asin, config.serpApiKey);
+              if (asinResult) {
+                productData = asinResult;
+              }
+            }
+
+            if (!productData.asin) {
+              const searchQuery = optimizeSearchQuery(product.searchQuery || product.title);
+              console.log('[Analysis] Searching:', searchQuery);
+              productData = await searchAmazonProduct(searchQuery, config.serpApiKey);
+            }
+          } catch (error: any) {
+            console.error('[Analysis] SerpAPI error for:', product.title, error.message);
+          }
+        }
+
+        return { key, product, productData };
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+
+      for (const { product, productData } of batchResults) {
+        const insertionIndex = typeof product.paragraphNumber === 'number' ? product.paragraphNumber : 0;
+
+        products.push({
+          id: product.id || `prod-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          title: productData.title || product.title || product.searchQuery,
+          asin: productData.asin || '',
+          price: productData.price || '$XX.XX',
+          imageUrl: productData.imageUrl || 'https://via.placeholder.com/300x300?text=Product',
+          rating: productData.rating || 4.5,
+          reviewCount: productData.reviewCount || 0,
+          verdict: productData.verdict || generateDefaultVerdict(product.title || product.searchQuery),
+          evidenceClaims: productData.evidenceClaims || generateDefaultClaims(),
+          brand: productData.brand || '',
+          category: product.category || 'General',
+          prime: productData.prime ?? true,
+          insertionIndex,
+          deploymentMode: 'ELITE_BENTO',
+          faqs: productData.faqs || generateDefaultFaqs(product.title || product.searchQuery),
+          specs: productData.specs || {},
+          confidence: product.confidence,
+          exactMention: product.exactQuote || '',
+          paragraphIndex: product.paragraphNumber,
+        });
+      }
+
+      if (i + batchSize < serpApiQueue.length) {
+        await sleep(200);
+      }
+    }
+
     let comparison: ComparisonData | undefined;
-    if (parsed.comparison?.shouldCreate && parsed.comparison.productIds?.length >= 2) {
+    if (parsed.comparison?.shouldCreate && products.length >= 2) {
+      const productIds = products.slice(0, 5).map(p => p.id);
       comparison = {
         title: parsed.comparison.title || `Top ${title} Comparison`,
-        productIds: parsed.comparison.productIds.slice(0, 5),
+        productIds,
+        specs: ['Price', 'Rating', 'Reviews'],
+      };
+    } else if (products.length >= 3) {
+      const productIds = products.slice(0, 5).map(p => p.id);
+      comparison = {
+        title: `${title} - Product Comparison`,
+        productIds,
         specs: ['Price', 'Rating', 'Reviews'],
       };
     }
 
-    // Cache results
     IntelligenceCache.setAnalysis(contentHash, { products, comparison });
+
+    console.log('[Analysis] Complete:', products.length, 'products found');
 
     return {
       detectedProducts: products,
       comparison,
       contentType: parsed.contentType || 'informational',
-      monetizationPotential: parsed.monetizationPotential || 'medium',
+      monetizationPotential: products.length >= 3 ? 'high' : products.length > 0 ? 'medium' : 'low',
       keywords: parsed.suggestedKeywords || [],
     };
 
   } catch (error: any) {
     console.error('[analyzeContentAndFindProduct] Error:', error);
+
+    if (phase1Products.length > 0 && config.serpApiKey) {
+      console.log('[Analysis] Falling back to Phase 1 products');
+      const fallbackProducts: ProductDetails[] = [];
+
+      for (const p1 of phase1Products.slice(0, 5)) {
+        try {
+          let productData: Partial<ProductDetails> = {};
+          if (p1.asin) {
+            const asinResult = await fetchProductByASIN(p1.asin, config.serpApiKey);
+            if (asinResult) {
+              productData = asinResult;
+            }
+          } else {
+            productData = await searchAmazonProduct(p1.name, config.serpApiKey);
+          }
+
+          if (productData.asin) {
+            fallbackProducts.push({
+              id: `fallback-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+              title: productData.title || p1.name,
+              asin: productData.asin,
+              price: productData.price || '$XX.XX',
+              imageUrl: productData.imageUrl || '',
+              rating: productData.rating || 4.5,
+              reviewCount: productData.reviewCount || 0,
+              verdict: generateDefaultVerdict(p1.name),
+              evidenceClaims: generateDefaultClaims(),
+              brand: productData.brand || '',
+              category: 'General',
+              prime: productData.prime ?? true,
+              insertionIndex: 0,
+              deploymentMode: 'ELITE_BENTO',
+              faqs: generateDefaultFaqs(p1.name),
+              specs: {},
+              confidence: p1.confidence,
+            });
+          }
+        } catch {}
+      }
+
+      if (fallbackProducts.length > 0) {
+        return {
+          detectedProducts: fallbackProducts,
+          contentType: 'informational',
+          monetizationPotential: 'medium',
+        };
+      }
+    }
+
     throw new Error(`AI analysis failed: ${error.message}`);
   }
 };
+
+interface Phase1Product {
+  name: string;
+  asin?: string;
+  sourceType: string;
+  confidence: number;
+}
+
+function extractProductsPhase1(htmlContent: string, textContent: string): Phase1Product[] {
+  const products: Phase1Product[] = [];
+  const seen = new Set<string>();
+
+  const asinPatterns = [
+    /amazon\.com\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})/gi,
+    /\/dp\/([A-Z0-9]{10})/gi,
+    /\/(B0[A-Z0-9]{8})(?:[\/\?\s"']|$)/gi,
+  ];
+
+  for (const pattern of asinPatterns) {
+    let match;
+    while ((match = pattern.exec(htmlContent)) !== null) {
+      const asin = match[1]?.toUpperCase();
+      if (asin && !seen.has(asin) && /^[A-Z0-9]{10}$/.test(asin)) {
+        seen.add(asin);
+        products.push({
+          name: `ASIN: ${asin}`,
+          asin,
+          sourceType: 'amazon_link',
+          confidence: 100,
+        });
+      }
+    }
+  }
+
+  const brandPatterns = [
+    /\b(Apple|Samsung|Sony|Google|Microsoft|Amazon|Nike|Adidas|Nintendo|Bose|JBL|Beats|Sennheiser|Logitech|Razer|Corsair|ASUS|Acer|Dell|HP|Lenovo|Dyson|Shark|Ninja|KitchenAid|Cuisinart|Breville|Vitamix|Instant\s*Pot|Fitbit|Garmin|Canon|Nikon|GoPro|DJI|Anker|Jabra|Philips|Braun|Oral-B|Roomba|iRobot|Eufy|Roborock|Weber|DeWalt|Makita|Milwaukee|Roku|Kindle|Echo|AirPods|PlayStation|Xbox)\s+([A-Za-z0-9][\w\s\-\.]{1,40}?)(?=[\.\,\!\?\;\:\)\]\"\']|\s+(?:is|are|was|were|has|have|with|for|features|offers|comes|includes|provides)|\s*$)/gi,
+  ];
+
+  for (const pattern of brandPatterns) {
+    let match;
+    while ((match = pattern.exec(textContent)) !== null) {
+      const fullMatch = match[0].trim().replace(/[\.\,\!\?\;]+$/, '');
+      const key = fullMatch.toLowerCase().replace(/\s+/g, '_');
+
+      if (seen.has(key) || fullMatch.length < 5 || fullMatch.length > 60) continue;
+      seen.add(key);
+
+      products.push({
+        name: fullMatch,
+        sourceType: 'brand_model',
+        confidence: 85,
+      });
+    }
+  }
+
+  const standaloneProducts = [
+    /\b(AirPods(?:\s*(?:Pro|Max))?(?:\s*\d+)?)\b/gi,
+    /\b(Galaxy\s*(?:Buds|Watch|Tab|S\d+|Z\s*(?:Fold|Flip))(?:\s*\d+)?(?:\s*(?:Pro|Plus|Ultra|FE))?)\b/gi,
+    /\b(Pixel\s*(?:\d+|Buds|Watch)(?:\s*(?:Pro|a))?)\b/gi,
+    /\b(iPhone\s*(?:\d+)?(?:\s*(?:Pro|Max|Plus|SE))?)\b/gi,
+    /\b(iPad\s*(?:Pro|Air|Mini)?(?:\s*\d+)?)\b/gi,
+    /\b(MacBook\s*(?:Air|Pro)?(?:\s*\d+)?)\b/gi,
+    /\b(Apple\s*Watch(?:\s*(?:Series|SE|Ultra)\s*\d*)?)\b/gi,
+    /\b(Echo\s*(?:Dot|Show|Studio|Pop)?(?:\s*\d+)?)\b/gi,
+    /\b(Kindle\s*(?:Paperwhite|Oasis|Scribe)?)\b/gi,
+    /\b(Fire\s*(?:TV|Stick|Tablet)(?:\s*\d+)?(?:\s*(?:Lite|Max|Kids))?)\b/gi,
+    /\b(PlayStation\s*\d+)\b/gi,
+    /\b(Xbox\s*(?:Series\s*[XS]|One))\b/gi,
+    /\b(Nintendo\s*Switch(?:\s*(?:OLED|Lite))?)\b/gi,
+    /\b(Quest\s*\d+)\b/gi,
+    /\b(Instant\s*Pot(?:\s*(?:Duo|Pro|Ultra))?)\b/gi,
+    /\b(Roomba\s*[a-z]?\d+)\b/gi,
+    /\b(Fitbit\s*(?:Charge|Versa|Sense|Luxe|Inspire)\s*\d*)\b/gi,
+    /\b(Garmin\s*(?:Forerunner|Fenix|Venu|Instinct)\s*\d*(?:\s*[A-Za-z]+)?)\b/gi,
+  ];
+
+  for (const pattern of standaloneProducts) {
+    let match;
+    while ((match = pattern.exec(textContent)) !== null) {
+      const fullMatch = match[1]?.trim();
+      if (!fullMatch) continue;
+
+      const key = fullMatch.toLowerCase().replace(/\s+/g, '_');
+      if (seen.has(key) || fullMatch.length < 4) continue;
+      seen.add(key);
+
+      products.push({
+        name: fullMatch,
+        sourceType: 'standalone',
+        confidence: 90,
+      });
+    }
+  }
+
+  return products;
+}
+
+function normalizeProductName(name: string): string {
+  return (name || '')
+    .toLowerCase()
+    .replace(/[^\w\s]/g, '')
+    .replace(/\s+/g, '_')
+    .trim()
+    .split('_')
+    .slice(0, 4)
+    .join('_');
+}
+
+function optimizeSearchQuery(query: string): string {
+  if (!query) return '';
+
+  let optimized = query
+    .replace(/\([^)]*\)/g, '')
+    .replace(/[-–—]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const stopWords = ['the', 'a', 'an', 'new', 'best', 'top', 'review', 'our', 'my', 'your', 'this', 'that'];
+  const words = optimized.split(' ').filter(w => !stopWords.includes(w.toLowerCase()));
+
+  return words.slice(0, 6).join(' ');
+}
 
 
 
