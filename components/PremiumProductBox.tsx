@@ -341,10 +341,14 @@ export const PremiumProductBox: React.FC<PremiumProductBoxProps> = ({
     [product.evidenceClaims],
   );
 
-  const faqs = useMemo(
-    () => (product.faqs?.length >= 3 ? product.faqs.slice(0, 4) : DEFAULT_FAQS),
+const faqs = useMemo(
+    () => {
+      const f = product.faqs;
+      return f != null && f.length >= 3 ? f.slice(0, 4) : DEFAULT_FAQS;
+    },
     [product.faqs],
-  );
+);
+
 
   const currentDate = useMemo(
     () => new Date().toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
